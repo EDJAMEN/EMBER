@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 
 export default function Footer() {
@@ -39,7 +41,7 @@ export default function Footer() {
 
         <div className="pt-4 border-t border-zinc-900 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px]">
           <div>
-            © {new Date().getFullYear()} EMBER Project. Strict PostGIS SRID 4326 compliance.
+            © 2026 EMBER Project. Strict PostGIS SRID 4326 compliance.
           </div>
           <div className="flex items-center gap-4 text-zinc-400">
             <span>NASA FIRMS API</span>
