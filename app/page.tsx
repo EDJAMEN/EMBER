@@ -121,7 +121,7 @@ export default function HomePage() {
           <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-white leading-tight">
             Satellite Data for{" "}
             <span className="bg-gradient-to-r from-orange-400 via-amber-400 to-red-500 bg-clip-text text-transparent">
-              Disaster Risk Management
+              Disaster Risk Managementssssssssssssssssssssssssssssssssss
             </span>
           </h1>
           <p className="text-zinc-400 text-sm sm:text-base leading-relaxed">

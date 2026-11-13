@@ -16,3 +16,4 @@ const supabaseKey =
  * For use in Route Handlers (`app/api/...`) and Server Actions.
  */
 export const supabase = createClient(supabaseUrl, supabaseKey);
+
