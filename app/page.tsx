@@ -119,9 +119,9 @@ export default function HomePage() {
             <span>PostGIS Spatial Intelligence</span>
           </div>
           <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-white leading-tight">
-            Harmonizing Satellite Data for{" "}
+            Satellite Data for{" "}
             <span className="bg-gradient-to-r from-orange-400 via-amber-400 to-red-500 bg-clip-text text-transparent">
-              Disaster Risk Management
+              Disaster Risk Managementssssssssssssssssss
             </span>
           </h1>
           <p className="text-zinc-400 text-sm sm:text-base leading-relaxed">
@@ -191,31 +191,28 @@ export default function HomePage() {
       <div className="flex border-b border-zinc-800 gap-6 text-sm font-medium">
         <button
           onClick={() => setActiveTab("overview")}
-          className={`pb-3 border-b-2 transition-all cursor-pointer ${
-            activeTab === "overview"
+          className={`pb-3 border-b-2 transition-all cursor-pointer ${activeTab === "overview"
               ? "border-orange-500 text-orange-400"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           Live Detections & Proximity
         </button>
         <button
           onClick={() => setActiveTab("harmonization")}
-          className={`pb-3 border-b-2 transition-all cursor-pointer ${
-            activeTab === "harmonization"
+          className={`pb-3 border-b-2 transition-all cursor-pointer ${activeTab === "harmonization"
               ? "border-orange-500 text-orange-400"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           Feed Harmonization Logic
         </button>
         <button
           onClick={() => setActiveTab("database")}
-          className={`pb-3 border-b-2 transition-all cursor-pointer ${
-            activeTab === "database"
+          className={`pb-3 border-b-2 transition-all cursor-pointer ${activeTab === "database"
               ? "border-orange-500 text-orange-400"
               : "border-transparent text-zinc-400 hover:text-zinc-200"
-          }`}
+            }`}
         >
           PostGIS Schema & Practices
         </button>
@@ -234,11 +231,10 @@ export default function HomePage() {
                 <button
                   key={level}
                   onClick={() => setSelectedConfidence(level)}
-                  className={`px-3 py-1 rounded-md text-xs font-semibold capitalize transition-all cursor-pointer ${
-                    selectedConfidence === level
+                  className={`px-3 py-1 rounded-md text-xs font-semibold capitalize transition-all cursor-pointer ${selectedConfidence === level
                       ? "bg-zinc-100 text-zinc-950 shadow"
                       : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-                  }`}
+                    }`}
                 >
                   {level}
                 </button>
@@ -253,11 +249,10 @@ export default function HomePage() {
                 <button
                   key={src}
                   onClick={() => setSelectedSource(src)}
-                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                    selectedSource === src
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${selectedSource === src
                       ? "bg-orange-600 text-white shadow"
                       : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-                  }`}
+                    }`}
                 >
                   {src}
                 </button>
@@ -287,31 +282,28 @@ export default function HomePage() {
                     <div
                       key={item.id}
                       onClick={() => setSelectedHotspot(item)}
-                      className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                        isSelected
+                      className={`p-4 rounded-xl border transition-all cursor-pointer ${isSelected
                           ? "bg-zinc-900 border-orange-500/80 shadow-lg shadow-orange-950/20"
                           : "bg-zinc-900/40 border-zinc-800/80 hover:bg-zinc-900/80 hover:border-zinc-700"
-                      }`}
+                        }`}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                         <div className="flex items-center gap-2">
                           <span
-                            className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                              item.source === "VIIRS"
+                            className={`px-2 py-0.5 rounded text-[11px] font-bold ${item.source === "VIIRS"
                                 ? "bg-sky-950 text-sky-400 border border-sky-800/60"
                                 : "bg-amber-950 text-amber-400 border border-amber-800/60"
-                            }`}
+                              }`}
                           >
                             {item.source}
                           </span>
                           <span
-                            className={`text-[11px] font-bold px-2 py-0.5 rounded capitalize ${
-                              item.confidence === "high"
+                            className={`text-[11px] font-bold px-2 py-0.5 rounded capitalize ${item.confidence === "high"
                                 ? "bg-red-950/80 text-red-400 border border-red-800/60"
                                 : item.confidence === "medium"
-                                ? "bg-amber-950/80 text-amber-400 border border-amber-800/60"
-                                : "bg-zinc-800 text-zinc-400"
-                            }`}
+                                  ? "bg-amber-950/80 text-amber-400 border border-amber-800/60"
+                                  : "bg-zinc-800 text-zinc-400"
+                              }`}
                           >
                             {item.confidence} confidence
                           </span>
@@ -322,13 +314,12 @@ export default function HomePage() {
 
                         <div className="flex items-center gap-2">
                           <span
-                            className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                              item.status === "CRITICAL"
+                            className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${item.status === "CRITICAL"
                                 ? "bg-red-500/10 text-red-400 border border-red-500/30 animate-pulse"
                                 : item.status === "ELEVATED"
-                                ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
-                                : "bg-zinc-800 text-zinc-400"
-                            }`}
+                                  ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                                  : "bg-zinc-800 text-zinc-400"
+                              }`}
                           >
                             {item.status}
                           </span>
@@ -349,8 +340,8 @@ export default function HomePage() {
                               item.proximityKm < 3
                                 ? "text-red-400 font-bold"
                                 : item.proximityKm < 6
-                                ? "text-amber-400 font-semibold"
-                                : "text-zinc-400"
+                                  ? "text-amber-400 font-semibold"
+                                  : "text-zinc-400"
                             }
                           >
                             {item.proximityKm.toFixed(1)} km
@@ -533,7 +524,7 @@ export default function HomePage() {
                 <span className="text-amber-400 font-bold">~1 km² / footprint</span>
               </div>
               <div className="pt-2 border-t border-zinc-800 text-zinc-400 text-[11px]">
-                ✓ Prevents alert inflation for local DRRMC field responders.  
+                ✓ Prevents alert inflation for local DRRMC field responders.
                 ✓ Preserves historical satellite pass records for burn-scar progression analysis.
               </div>
             </div>
