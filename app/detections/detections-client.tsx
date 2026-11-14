@@ -62,14 +62,14 @@ export function DetectionsPage() {
       <section className="ember-page-heading">
         <div>
           <div className="ember-eyebrow">
-            <span /> HARMONIZED FEED <span className="ember-eyebrow-date">/ BUKIDNON</span>
+            <span /> HARMONIZED FEED
           </div>
           <h1>
             Thermal hotspot detections<span>.</span>
           </h1>
           <p>NASA MODIS &amp; VIIRS telemetry normalized for spatial analysis.</p>
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div className="ember-page-actions">
           <Button variant="outline" className="ember-export-button" asChild>
             <Link href="/">View on live map</Link>
           </Button>
@@ -167,7 +167,7 @@ export function DetectionsPage() {
             </div>
           </div>
         </div>
-        <div className="ember-map-layout" style={{ display: "block", minHeight: 0 }}>
+        <div className="ember-panel">
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", textAlign: "left", fontSize: "11px" }}>
               <thead>
@@ -199,7 +199,7 @@ export function DetectionsPage() {
                           item.confidence === "high" ? "confidence-high" : "confidence-nominal"
                         }
                         style={{
-                          borderRadius: "3px",
+                          borderRadius: "var(--radius-chip)",
                           padding: "3px 6px",
                           fontFamily: "var(--font-mono)",
                           fontSize: "9px",

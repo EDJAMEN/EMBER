@@ -16,6 +16,11 @@ function getParam(searchParams: URLSearchParams, key: string): string | null {
   return searchParams.get(key) ?? searchParams.get(key.toLowerCase()) ?? searchParams.get(key.toUpperCase());
 }
 
+export async function HEAD() {
+  const key = process.env.FIRMS_MAP_KEY?.trim() || process.env.NASA_FIRMS_MAP_KEY?.trim();
+  return new NextResponse(null, { status: key ? 204 : 503 });
+}
+
 export async function GET(request: NextRequest) {
   const key = process.env.FIRMS_MAP_KEY?.trim() || process.env.NASA_FIRMS_MAP_KEY?.trim();
   if (!key) {
