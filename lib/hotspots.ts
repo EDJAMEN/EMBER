@@ -50,6 +50,15 @@ export function normalizeViirs(flag: "l" | "n" | "h"): Confidence {
   return flag === "h" ? "high" : flag === "n" ? "medium" : "low";
 }
 
+export function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number) {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(bLat - aLat);
+  const dLng = rad(bLng - aLng);
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
 export function threatTier(proximityKm: number): AlertItem["threatLevel"] {
   if (proximityKm < 3) return "CRITICAL";
   if (proximityKm < 6) return "ELEVATED";

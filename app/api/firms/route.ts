@@ -5,10 +5,12 @@ import {
   type SensorSource,
   normalizeModis,
   normalizeViirs,
+  haversineKm,
 } from "@/lib/hotspots";
 import { harmonizeHotspots } from "@/lib/harmonization";
 
-const BBOX = "124.5,7.3,125.5,8.6"; // west,south,east,north — Bukidnon
+const BBOX = "124.5,7.3,125.5,8.6"; // west,south,east,north — Bukidnon (default region)
+const NEAR_DEG = 0.5; // ~55 km box around a picked point; covers the action guide's 25 km radius
 const DAY_RANGE = 2;
 
 const TOWNS = [
@@ -20,15 +22,6 @@ const TOWNS = [
   { settlement: "Poblacion", municipality: "Impasugong", lat: 8.3011, lng: 125.0061 },
   { settlement: "Poblacion", municipality: "Don Carlos", lat: 7.7208, lng: 124.9989 },
 ];
-
-function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number) {
-  const rad = (d: number) => (d * Math.PI) / 180;
-  const dLat = rad(bLat - aLat);
-  const dLng = rad(bLng - aLng);
-  const h =
-    Math.sin(dLat / 2) ** 2 + Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * 6371 * Math.asin(Math.sqrt(h));
-}
 
 function parseCsv(text: string): Record<string, string>[] {
   const lines = text.trim().split("\n");
@@ -42,11 +35,13 @@ function parseCsv(text: string): Record<string, string>[] {
 
 async function fetchSource(
   key: string,
-  product: "VIIRS_SNPP_NRT" | "MODIS_NRT",
+  product: "VIIRS_NOAA20_NRT" | "MODIS_NRT",
   source: SensorSource,
+  bbox: string,
+  towns: typeof TOWNS,
 ): Promise<Hotspot[]> {
   const res = await fetch(
-    `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${key}/${product}/${BBOX}/${DAY_RANGE}`,
+    `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${key}/${product}/${bbox}/${DAY_RANGE}`,
     { next: { revalidate: 600 } }
   );
   if (!res.ok) throw new Error(`FIRMS ${product} responded ${res.status}`);
@@ -71,9 +66,9 @@ async function fetchSource(
     const brightness = Number.parseFloat(
       row["bright_ti4"] ?? row["bright_ti5"] ?? row["brightness"] ?? "",
     );
-    let nearest = TOWNS[0]!;
+    let nearest = towns[0]!;
     let proximityKm = haversineKm(lat, lng, nearest.lat, nearest.lng);
-    for (const town of TOWNS.slice(1)) {
+    for (const town of towns.slice(1)) {
       const d = haversineKm(lat, lng, town.lat, town.lng);
       if (d < proximityKm) {
         proximityKm = d;
@@ -93,7 +88,7 @@ async function fetchSource(
       acqTime: `${(row["acq_time"] ?? "").slice(0, 2)}:${(row["acq_time"] ?? "").slice(2)} UTC`,
       lat,
       lng,
-      settlement: `Near ${nearest.settlement}, ${nearest.municipality}`,
+      settlement: nearest.settlement ? `Near ${nearest.settlement}, ${nearest.municipality}` : `Near ${nearest.municipality}`,
       municipality: nearest.municipality,
       proximityKm: Math.round(proximityKm * 10) / 10,
       dayOffset,
@@ -103,7 +98,28 @@ async function fetchSource(
   return out;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const params = new URL(request.url).searchParams;
+  let bbox = BBOX;
+  let towns = TOWNS;
+  if (params.has("lat") || params.has("lng")) {
+    const lat = Number(params.get("lat"));
+    const lng = Number(params.get("lng"));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      return NextResponse.json({ error: "lat/lng out of range", data: [] }, { status: 400 });
+    }
+    const clamp = (v: number, limit: number) => Math.max(-limit, Math.min(limit, v)).toFixed(3);
+    bbox = [
+      clamp(lng - NEAR_DEG, 180),
+      clamp(lat - NEAR_DEG, 90),
+      clamp(lng + NEAR_DEG, 180),
+      clamp(lat + NEAR_DEG, 90),
+    ].join(",");
+    // Outside Bukidnon the reference point is the picked place itself.
+    const name = (params.get("name") ?? "").slice(0, 80) || "Selected place";
+    towns = [{ settlement: "", municipality: name, lat, lng }];
+  }
+
   const key = process.env.FIRMS_MAP_KEY ?? process.env.NASA_FIRMS_MAP_KEY;
   if (!key) {
     return NextResponse.json({ error: "FIRMS_MAP_KEY is not configured", data: [] }, { status: 200 });
@@ -111,8 +127,8 @@ export async function GET() {
 
   try {
     const [viirs, modis] = await Promise.all([
-      fetchSource(key, "VIIRS_SNPP_NRT", "VIIRS"),
-      fetchSource(key, "MODIS_NRT", "MODIS"),
+      fetchSource(key, "VIIRS_NOAA20_NRT", "VIIRS", bbox, towns), // Suomi-NPP NRT feed has had no data since 2026-11-02
+      fetchSource(key, "MODIS_NRT", "MODIS", bbox, towns),
     ]);
     const raw = [...viirs, ...modis];
     // Fuse overlapping MODIS (1 km) + VIIRS (375 m) pixels into one cluster per thermal event.

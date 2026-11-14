@@ -1,0 +1,148 @@
+// Temperature / heat-index grid around a place, colored with the "Max Heat Index" scale (°C).
+import { featureCollection, isobands, point } from "@turf/turf";
+import type { FeatureCollection, MultiPolygon } from "geojson";
+import { heatIndexC } from "./action-guide";
+
+// [lower bound °C, color] — ticks 0,5,10,15,20,27,33,40,50 match the reference legend.
+export const HEAT_SCALE: [number, string][] = [
+  [-Infinity, "#ffffff"],
+  [5, "#cfe8ff"],
+  [10, "#9fd0ff"],
+  [15, "#4fa3f7"],
+  [20, "#26d9b5"],
+  [27, "#3cc83c"],
+  [33, "#ffe600"],
+  [40, "#ff8c1a"],
+  [46, "#e3211c"],
+  [50, "#7f0a0a"],
+];
+export const HEAT_TICKS = [0, 5, 10, 15, 20, 27, 33, 40, 50];
+
+export function heatColor(c: number): string {
+  let color = HEAT_SCALE[0]![1];
+  for (const [min, col] of HEAT_SCALE) if (c >= min) color = col;
+  return color;
+}
+
+/** Max heat index over a day of hourly temperature (°C) + relative humidity (%). */
+export function maxHeatIndex(temps: (number | null)[], rhs: (number | null)[]): number | null {
+  let max: number | null = null;
+  temps.forEach((t, i) => {
+    const rh = rhs[i];
+    if (typeof t !== "number" || typeof rh !== "number") return;
+    const hi = heatIndexC(t, rh);
+    if (max === null || hi > max) max = hi;
+  });
+  return max;
+}
+
+export interface GridCell {
+  lat: number;
+  lng: number;
+  tempC: number | null;
+  maxHeatIndexC: number | null;
+}
+
+export const GRID_STEP_DEG = 0.15; // 7×7 cells ≈ 100 km square
+const GRID_HALF = 3;
+
+export async function fetchHeatGrid(lat: number, lng: number): Promise<GridCell[]> {
+  const pts: { lat: number; lng: number }[] = [];
+  for (let i = -GRID_HALF; i <= GRID_HALF; i++)
+    for (let j = -GRID_HALF; j <= GRID_HALF; j++) {
+      const pLat = Math.max(-89.9, Math.min(89.9, lat + i * GRID_STEP_DEG));
+      const pLng = ((((lng + j * GRID_STEP_DEG + 180) % 360) + 360) % 360) - 180;
+      pts.push({ lat: Number(pLat.toFixed(4)), lng: Number(pLng.toFixed(4)) });
+    }
+  // One multi-location request (Open-Meteo returns an array in the same order).
+  const res = await fetch(
+    `https://api.open-meteo.com/v1/forecast?latitude=${pts.map((p) => p.lat).join(",")}&longitude=${pts
+      .map((p) => p.lng)
+      .join(",")}&current=temperature_2m&hourly=temperature_2m,relative_humidity_2m&forecast_days=1&timezone=auto`,
+  );
+  if (!res.ok) throw new Error(`grid ${res.status}`);
+  const body = (await res.json()) as {
+    current?: { temperature_2m?: number };
+    hourly?: { temperature_2m?: (number | null)[]; relative_humidity_2m?: (number | null)[] };
+  }[];
+  return pts.map((p, idx) => {
+    const r = body[idx];
+    return {
+      ...p,
+      tempC: typeof r?.current?.temperature_2m === "number" ? r.current.temperature_2m : null,
+      maxHeatIndexC: maxHeatIndex(r?.hourly?.temperature_2m ?? [], r?.hourly?.relative_humidity_2m ?? []),
+    };
+  });
+}
+
+export type GridMetric = "tempC" | "maxHeatIndexC";
+export type AreaProps = { color: string; label: string };
+
+/** Rounded [min, max] of a metric across the grid, for the slider's range. */
+export function gridDomain(cells: GridCell[], metric: GridMetric): [number, number] | null {
+  const vals = cells.map((c) => c[metric]).filter((v): v is number => v !== null);
+  if (!vals.length) return null;
+  const lo = Math.floor(Math.min(...vals));
+  const hi = Math.ceil(Math.max(...vals));
+  return [lo, hi === lo ? lo + 1 : hi];
+}
+
+const SMOOTH = 4; // bilinear upsampling factor: 7×7 → 25×25 so contour edges read as curves, not blocks
+
+/**
+ * Contour areas whose value lies in [lo, hi], split at the color-scale edges so each band
+ * keeps its legend color. Also returns the share of the grid area covered.
+ */
+export function contourAreas(
+  cells: GridCell[],
+  metric: GridMetric,
+  lo: number,
+  hi: number,
+): { areas: FeatureCollection<MultiPolygon, AreaProps>; coverage: number } {
+  const n = Math.round(Math.sqrt(cells.length));
+  const empty = { areas: featureCollection<MultiPolygon, AreaProps>([]), coverage: 0 };
+  if (n < 2 || n * n !== cells.length) return empty;
+
+  const raw = cells.map((c) => c[metric]);
+  const known = raw.filter((v): v is number => v !== null);
+  if (!known.length) return empty;
+  const fill = known.reduce((a, b) => a + b, 0) / known.length; // rare gaps: use the mean
+  const v = (i: number, j: number) => raw[i * n + j] ?? fill;
+
+  const lat0 = cells[0]!.lat;
+  const lng0 = cells[0]!.lng;
+  const step = GRID_STEP_DEG / SMOOTH;
+  const size = (n - 1) * SMOOTH + 1;
+  const pts = [];
+  let inside = 0;
+  for (let I = 0; I < size; I++) {
+    for (let J = 0; J < size; J++) {
+      const fi = I / SMOOTH;
+      const fj = J / SMOOTH;
+      const i0 = Math.min(Math.floor(fi), n - 2);
+      const j0 = Math.min(Math.floor(fj), n - 2);
+      const ti = fi - i0;
+      const tj = fj - j0;
+      const z =
+        v(i0, j0) * (1 - ti) * (1 - tj) +
+        v(i0 + 1, j0) * ti * (1 - tj) +
+        v(i0, j0 + 1) * (1 - ti) * tj +
+        v(i0 + 1, j0 + 1) * ti * tj;
+      if (z >= lo && z <= hi) inside++;
+      // lng not re-wrapped so the grid stays regular across the dateline (Leaflet draws >180 fine)
+      pts.push(point([lng0 + J * step, lat0 + I * step], { z }));
+    }
+  }
+
+  const top = hi > lo ? hi : lo + 0.5;
+  const bottom = hi > lo ? lo : lo - 0.5;
+  const breaks = [bottom, ...HEAT_SCALE.map(([min]) => min).filter((m) => m > bottom && m < top), top];
+  const bands = isobands(featureCollection(pts), breaks, { zProperty: "z" });
+  const features = bands.features.flatMap((f, k) => {
+    if (!f.geometry.coordinates.length) return [];
+    const a = breaks[k]!;
+    const b = breaks[k + 1]!;
+    return [{ ...f, properties: { color: heatColor((a + b) / 2), label: `${Math.round(a)}–${Math.round(b)}°C` } }];
+  });
+  return { areas: featureCollection(features), coverage: inside / (size * size) };
+}
