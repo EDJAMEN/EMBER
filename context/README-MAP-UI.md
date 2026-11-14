@@ -12,6 +12,51 @@ Files touched: `app/index-client.tsx`, `app/globals.css`, `components/ember-map.
 
 ## 1. Incident panel inside the map
 
+> **This panel is a placeholder.** Nothing below is fixed copy. Cluster names, counts, distances, timestamps, sensor values and coordinates all change with the live feed, the selected day, the sensor filters, confidence filters and any place search. Treat the markup and classes as the contract; treat the text as sample output. When editing, keep the labelled slots and their data bindings, and free to swap the illustrative values.
+
+### Placeholder template
+
+```text
+SHOW ON MAP                        <- shared selector, both modes
+  Wildfires | Temperature | Heat index
+
+Priority clusters  NN              <- cluster count, zero-padded
+  Ranked by proximity & confidence
+
+NEAREST SETTLEMENT                 <- sort label
+
+<cluster name>        <tier>        <- repeated row, 0..n
+<settlement>, <municipality>
+<acquisition time>  ·  <n> detections
+                    <x.x> km
+                    from town
+
+View all incidents
+
+SELECTED CLUSTER                   <- only when a row is active
+<cluster name>   <tier confidence>
+<settlement> · <x.x> km from nearest settlement
+<n> thermal pixels
+<sensor> · <brightness> K
+POINT(<lng> <lat>) · SRID 4326
+```
+
+Sample rendering used during the redesign, for reference only:
+
+```text
+Priority clusters 03 / Ranked by proximity & confidence
+NEAREST SETTLEMENT
+Malaybalay Ridge  HIGH   Malaybalay City, Bukidnon   05:22 UTC · 18 detections   1.8 km from town
+Valencia Flat     HIGH   Valencia City, Bukidnon     04:55 UTC · 12 detections   2.7 km from town
+Maramag Grove     MEDIUM Maramag, Bukidnon            05:22 UTC ·  9 detections   4.6 km from town
+SELECTED CLUSTER
+Maramag Grove  MEDIUM confidence
+Upper Pulangi Watershed · 4.6 km from nearest settlement
+9 thermal pixels / VIIRS · 316.5 K / POINT(125.0065 7.7583) · SRID 4326
+```
+
+Those values are not assertions about the data. They show which slot each value occupies.
+
 ### Structure
 
 ```
@@ -41,6 +86,8 @@ Files touched: `app/index-client.tsx`, `app/globals.css`, `components/ember-map.
 
 ### What each label is bound to
 
+Samples in the left column are placeholder output; the middle column is the real source.
+
 | Text | Source | Notes |
 |---|---|---|
 | `Priority clusters` + `03` | `visibleHotspots.length`, zero-padded to two digits | reflects current search / day / sensor filters |
@@ -52,6 +99,16 @@ Files touched: `app/index-client.tsx`, `app/globals.css`, `components/ember-map.
 | `SELECTED CLUSTER` detail | `selectedHotspot` | name, confidence, settlement, thermal-pixel total, sensor + brightness, `POINT(lng lat) · SRID 4326` |
 
 Coordinates print as `POINT(<lng> <lat>)`, the PostGIS order, not the `lat, lng` order used elsewhere in the UI. Keep it that way if the text is meant to be pasted into SQL.
+
+### Panel states
+
+| State | What renders |
+|---|---|
+| Sample data (LIVE off) | illustrative clusters from `lib/hotspots.ts`; fixed text like `05:22 UTC` |
+| Live feed | clusters from `/api/firms/hotspots`, values differ per fetch |
+| Clustered hot spots layer off | `visibleHotspots` empties; `.ember-no-results` and `00` |
+| Place search active | row subtitle switches to `km from <place>`, list narrows to that bbox |
+| Climate mode | the whole list is replaced by `ClimatePanel`; only the selector above stays |
 
 ### Interaction rules
 
@@ -151,7 +208,7 @@ This is the change that keeps the incident panel on screen. Expanding only `.emb
 
 ## Change checklist
 
-1. New panel content goes inside `.ember-incident-panel`; do not widen it past 280px in the map section without re-checking the 860px and 680px breakpoints.
+1. New panel content goes inside `.ember-incident-panel`; do not widen it past 280px in the map section without re-checking the 860px and 680px breakpoints. Panel copy is placeholder text — change the data binding, not the sample wording.
 2. Any new toolbar control: 32px, `.ember-layer-button` or `.ember-window-selector`.
 3. Never point `.map-expanded` at `.ember-map-canvas` again; the panel must travel with the map.
 4. Verify with: `npm run dev`, open `/`, press expand, confirm `Priority clusters` is visible and the page does not scroll horizontally.
