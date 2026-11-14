@@ -126,7 +126,7 @@ export function EmberDashboard() {
           <h1>
             Good morning, team<span>.</span>
           </h1>
-          <p>Here’s the latest across your monitored region.</p>
+          <p>Here’s the latest across your monitored region..............</p>
         </div>
         <Button variant="outline" className="ember-export-button" asChild>
           <Link href="/detections">
