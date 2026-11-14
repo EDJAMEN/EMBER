@@ -1,178 +1,108 @@
-# SPEC: Map UI — incident panel, control sizing, expanded layout
+# PROMPT: Responsive Regional-overview map (EMBER)
 
-Machine-readable spec for the Regional overview map on Overview page `/`.
-Project: EMBER, Next.js App Router + Tailwind v4. Files: `app/index-client.tsx`, `app/globals.css`, `components/ember-map.tsx`, `components/climate-panel.tsx`.
-
-Read this as: the listed markup, classes and numeric values are the contract. Sample text is placeholder output, not content requirements.
+Copy the block below into a design/coding prompt. It describes how the map on `/` behaves at every screen width.
 
 ---
 
-## 1. Incident panel
+## Role and goal
 
-### Placeholder notice
+You are implementing the **Regional overview** map on the Overview page of EMBER (Next.js App Router + Tailwind v4).
+Goal: one map component that reads as "a maps app" on a phone and as "a map with a floating detail panel" on a desktop, with no horizontal page scroll at any width and no control jumping between breakpoints.
 
-All text in the panel is variable. Cluster names, counts, distances, timestamps, sensor values and coordinates change with: live feed on/off, `dayCursor`, `showViirs`, `showModis`, `confidence`, place search. The markup and data bindings are fixed; the copy is not.
+Files: `app/index-client.tsx` (markup + state), `app/globals.css` (all layout rules), `components/ember-map.tsx` (MapLibre map), `components/climate-panel.tsx`.
 
-### Required DOM
+Treat the DOM structure, class names and numeric values in this prompt as a contract. All cluster names, counts, distances, timestamps and coordinates are **variable data** — bind them, never hardcode them.
+
+## Screen anatomy
 
 ```
 .ember-map-section
-└── .ember-map-layout
-    ├── .ember-map-canvas
-    └── .ember-incident-panel
-        ├── .ember-window-selector        [SHOW ON MAP, role=radiogroup]
-        ├── .ember-panel-header           [title + count, sort explanation]
-        ├── .ember-sort-label             [NEAREST SETTLEMENT]
-        ├── .ember-incident-list          [0..n × .ember-incident-row]
-        ├── .ember-view-incidents         [link → /detections]
-        └── .ember-selected-detail        [rendered only when selectedHotspot exists]
+├── .ember-map-screen            (mobile only: one-viewport wrapper)
+│   ├── .ember-section-heading   (h2 "Regional overview" + place name)
+│   │   └── .ember-map-heading-actions   (GLOBE/FLAT, NORMAL/REALISTIC, LOCATION, Layers, SAMPLE/LIVE, VIIRS/MODIS)
+│   └── .ember-map-layout
+│       ├── .ember-map-canvas    (MapLibre + absolutely positioned overlays)
+│       │   ├── .ember-map-search
+│       │   ├── .ember-map-tools      (+ − locate, .ember-fullscreen)
+│       │   ├── .ember-map-legend
+│       │   ├── .ember-map-compass
+│       │   └── .ember-layer-popover
+│       └── .ember-incident-panel  or  <ClimatePanel>
+└── .ember-timeline              (7-day timeline, normal page flow)
 ```
 
-### Slots (placeholder → binding)
+## Layout per width
 
-| Slot | Binding | Format |
-|---|---|---|
-| cluster count | `visibleHotspots.length` | zero-padded 2 digits, e.g. `03` |
-| row name | `hotspot.name` | plain text |
-| tier badge | `BADGE_OF[hotspot.confidence]` | `HIGH` / `MEDIUM` / `LOW` |
-| row subtitle | `hotspot.municipality`, or `"<x> km from <place>"` when place search active | one line, ellipsis |
-| row meta | `hotspot.acqTime`, `hotspot.count` | `HH:MM UTC · N detections` |
-| row distance | `hotspot.proximityKm.toFixed(1)` | `x.x km` + `from town` |
-| detail kicker | static | `SELECTED CLUSTER` |
-| detail title | `selectedHotspot.name` + confidence | `HIGH confidence` |
-| detail subtitle | `settlement` + `proximityKm` | `· x.x km from nearest settlement` |
-| detail stats | thermal pixel total, sensor, brightness | `N thermal pixels`, `VIIRS · K` |
-| detail coordinate | `POINT(lng lat) · SRID 4326` | PostGIS order, lng first |
+### Desktop — `min-width: 1101px`
 
-### CSS contract
+- `.ember-map-layout` is `display: block; position: relative`; the canvas fills it (`min-height: clamp(560px, 72vh, 720px)`).
+- `.ember-incident-panel` floats over the map: `position: absolute; top/right/bottom: 14px; width: 320px`, card background at 94% opacity, `backdrop-filter: blur(14px)`, `border-radius: var(--radius-card)`, `overflow-y: auto`, thin scrollbar.
+- Control row sits to the right of the heading; controls never wrap.
+- Fullscreen button (`.ember-fullscreen`) visible bottom-right.
 
-| Selector | Required declarations |
-|---|---|
-| `.ember-panel, .ember-map-layout` | `border: 1px solid var(--border)`, `border-radius: var(--radius-card)`, `background: var(--card)` |
-| `.ember-map-layout` | `display: grid`, `grid-template-columns: minmax(0, 1fr) 300px`, `overflow: hidden`, `min-height: 404px` |
-| `.ember-map-section .ember-map-layout` | `grid-template-columns: minmax(0, 1fr) 280px`, `min-height: 560px` |
-| `.ember-incident-panel` | `display: flex`, `flex-direction: column`, `min-width: 0`, `border-left: 1px solid var(--border)` |
-| `.ember-panel-header` | `padding: 15px 14px 12px` |
-| `.ember-sort-label` | `font-family: var(--font-mono)`, `font-size: 7px`, top+bottom border, `padding: 7px 14px` |
-| `.ember-incident-row` | `min-height: 68px`, bottom border, `padding: 8px 12px`, cursor pointer |
-| `.ember-incident-row.active` | `box-shadow: inset 2px 0 var(--primary)` + accent background mix |
-| `.ember-incident-name` | `font-size: 10px`, `font-weight: 650` |
-| `.ember-incident-area, .ember-incident-meta` | ellipsis, `white-space: nowrap`, `min-width: 0` |
-| `.ember-selected-detail` | `margin: auto 11px 11px`, `border-radius: var(--radius-card)` |
+### Tablet — `681px … 1100px`
 
-`overflow: hidden` on `.ember-map-layout` is required for child corner clipping. Do not remove without clipping each child.
+- `.ember-map-layout` returns to `display: grid; grid-template-columns: minmax(0, 1fr) 270px` (250px at ≤860px) and a fixed `height: clamp(560px, 78vh, 820px)` so a long fire list scrolls inside the panel instead of stretching the map.
+- Panel is a column inside the card, `border-left: 1px solid var(--border)`.
 
-### States
+### Mobile — `max-width: 680px`
 
-| State | Expected render |
-|---|---|
-| LIVE off (sample) | clusters from `lib/hotspots.ts` |
-| LIVE on | clusters from `/api/firms/hotspots`, counts may differ per fetch |
-| `clusteredHotspots: false` | `visibleHotspots` empty → `00` + `.ember-no-results`, no detail card |
-| place search | rows filtered to bbox; subtitle uses `km from <place>` |
-| `view = temperature` or `heatindex` | incident list replaced by `<ClimatePanel>`; `.ember-window-selector` above it stays rendered |
+- `.ember-map-screen` owns exactly one viewport: `display: flex; height: calc(100dvh - 52px); flex-direction: column`. The page's horizontal padding is dropped inside it so the map runs edge to edge.
+- Heading becomes two stacked rows: title block, then **one** control row: `flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none` plus a right-edge fade mask so the cut-off is discoverable. No page-level horizontal scroll.
+- `.ember-map-layout` is `position: relative; display: block; flex: 1 1 auto; min-height: 0; margin: 0 -15px; border-left/right: 0; border-radius: 0`. The canvas is `position: absolute; inset: 0`, so the map literally fills the remaining screen.
+- `.ember-incident-panel` becomes a **bottom sheet**: `position: absolute; z-index: 11; bottom: 0; left/right: 0; border-radius: 14px 14px 0 0; background: var(--card); box-shadow: 0 -12px 32px …`; `.ember-panel-header` is `position: sticky; top: 0`.
+  - Default state is **collapsed** (`.clusters-collapsed = !climate && !clustersOpen`): `max-height: none` and every child except `.ember-panel-header` is `display: none`, so only a ~60px title bar overlays the map.
+  - Expanded: `max-height: 62%; overflow-y: auto; overscroll-behavior: contain`.
+  - The `.ember-sheet-toggle` chevron in the header flips `clustersOpen` (`aria-expanded`), rotates 180° when open, and is `display: none` above 680px.
+  - Climate view never collapses — that panel has no header, so the collapsed class is not applied.
+- Overlay positions: search `top: 10px; left/right: 10px` full width; zoom tools `top: 56px; right: 10px`; legend `top: 56px; left: 10px; max-width: calc(100% - 70px)`; layer popover `top: 54px; right: 10px; max-height: 46%`. Compass and fullscreen are `display: none`.
+- MapLibre attribution stays a compact chip above the sheet (bottom offset `calc(62% + 6px)` open, `68px` collapsed via `:has()`); the text expands only when the chip is tapped.
+- `.ember-timeline` stays below `.ember-map-screen`, in normal page flow — it is never part of the fixed-height screen.
 
-### Behaviour rules
+## Panel content contract
 
-1. Row click calls `setSelectedId(hotspot.id)`; does not move the map camera. Marker click is the only camera-affecting selection.
-2. Ranking done in `clusterHotspots()` (`lib/firms-client.ts`): confidence desc, then `proximityKm` asc, then `count` desc. Panel must not re-sort.
-3. Header count and list length must always agree.
-4. Climate mode replaces the list, never the "SHOW ON MAP" selector.
-5. Coordinates use `POINT(lng lat)`, not `lat, lng`.
+Panel sections, in order: `.ember-window-selector` (SHOW ON MAP: Wildfires / Temperature / Heat index), `.ember-panel-header` (title + zero-padded 2-digit count, "Ranked by proximity & confidence"), `.ember-sort-label` (NEAREST SETTLEMENT), `.ember-incident-list` of `.ember-incident-row` (indicator icon, name + tier badge `HIGH|MEDIUM|LOW`, area line, `HH:MM UTC · N detections`, `x.x km` + `from town`), `.ember-view-incidents` link, then `.ember-selected-detail` (kicker `SELECTED CLUSTER`, name + confidence, `· x.x km from nearest settlement`, thermal pixel count, sensor + brightness, `POINT(lng lat) · SRID 4326`).
 
----
+Rules:
 
-## 2. Control sizing
+1. Row click selects (`setSelectedId`); it does not move the camera — only a marker click does.
+2. Ranking comes from `clusterHotspots()` (confidence desc, `proximityKm` asc, `count` desc). Never re-sort in JSX.
+3. Header count always equals the rendered row count (`00` + `.ember-no-results` when empty).
+4. Long area/meta lines use `white-space: nowrap` + ellipsis + `min-width: 0`; no row grows taller to fit text.
+5. Every value in the panel is bound data (live FIRMS or the sample set), never literal copy.
 
-Rule: every map-toolbar control and the page export action is **32px tall**.
+## Control sizing contract
 
-| Control | Class | Outer | Inner |
-|---|---|---|---|
-| GLOBE/FLAT, NORMAL/REALISTIC, SAMPLE/LIVE, VIIRS/MODIS | `.ember-window-selector` | 32px | 24px |
-| LOCATION, Layers | `.ember-layer-button` | 32px | — |
-| Export briefing | `.ember-export-button` | 32px | — |
-| page-heading segmented control | `.ember-page-actions .ember-window-selector` | 32px | 24px |
+Every map-toolbar control and the page export action is **32px tall** (inner segment buttons 24px). Use `.ember-window-selector` / `.ember-layer-button` / `.ember-export-button`; never Tailwind `h-8` or shadcn `size="sm"`.
 
-```css
-.ember-map-heading-actions .ember-window-selector { height: 32px; align-items: center; }
-.ember-map-heading-actions .ember-window-selector button { height: 24px; }
-.ember-map-heading-actions .ember-layer-button { height: 32px; }
-.ember-window-selector { display: inline-flex; gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--card); padding: 3px; }
-.ember-window-selector button { min-width: 39px; height: 24px; border: 0; border-radius: var(--radius-chip); background: transparent; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; cursor: pointer; }
-.ember-window-selector button.selected { background: var(--accent); color: var(--accent-foreground); font-weight: 650; }
-.ember-layer-button { height: 32px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--card); box-shadow: none; padding: 0 10px; gap: 6px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; }
-.ember-layer-button:hover { background: var(--accent); color: var(--accent-foreground); }
-.ember-layer-button > svg { width: 12px; height: 12px; }
-.ember-export-button { height: 32px; border-color: var(--border); border-radius: var(--radius-control); padding: 0 12px; gap: 6px; font-size: 10px; }
-```
+At ≤680px text labels are dropped (`font-size: 0; width: 32px`) — every such control must already have both `aria-label` and `title`.
 
-Constraints:
+## Expanded map
 
-1. Do not size toolbar buttons with Tailwind `h-8` or shadcn `size="sm"` (36px). Use the classes above.
-2. Standalone controls reuse `.ember-layer-button` so they match segmented-group chrome.
-3. `.ember-map-heading-actions` and `.ember-map-control-group` must wrap (`flex-wrap: wrap`), never cause horizontal page scroll.
-4. `@media (max-width: 680px)`: `.ember-layer-button` collapses to icon-only (`width: 32px; padding: 0; font-size: 0`). Every control that loses its text label must already have `aria-label` and `title`.
-5. Page markdown must not introduce a new control height; extend one of the tables above.
+The toggle adds `.map-expanded` to `.ember-map-layout` (never to `.ember-map-canvas` alone), which makes it `position: fixed; inset: 18px; z-index: 60; overflow-y: auto; min-height: 0 !important` so the panel stays visible alongside the bigger canvas. Keep grid columns intact in that state.
 
----
+## Do not break
 
-## 3. Expanded map layout
-
-### Contract
-
-Toggle target is the layout, not the canvas:
-
-```tsx
-document.querySelector(".ember-map-section .ember-map-layout")?.classList.toggle("map-expanded")
-```
-
-This is why the incident panel stays visible in expand mode.
-
-```css
-.map-expanded { position: fixed !important; z-index: 60; inset: 18px; overflow-y: auto; min-height: 0 !important; border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: 0 12px 60px oklch(0.12 0.02 170 / 45%); }
-.map-expanded .ember-map-canvas { height: 100%; min-height: 0; }
-```
-
-1. `min-height: 0 !important` is required. It overrides `.ember-map-section .ember-map-layout { min-height: 560px }` and the `min-height: 640px` rule at `min-width: 1600px`.
-2. Grid columns stay intact in expand mode: canvas `1fr`, panel `280px`.
-3. `z-index: 60` is above sidebar (`40`) and below nothing else in-page.
-
-### Verification reference
-
-Headless Chrome, 1400×1000:
-
-| Element | Rect |
-|---|---|
-| expanded layout | 1364×964 at (18,18) |
-| incident panel | 320×934 at (1047,33) |
-| canvas | 1362×962 |
-| `Priority clusters` text | present |
-
-### Known limitations
-
-1. No Escape handler, no backdrop. Only the same button closes it.
-2. Icon stays `Maximize2`; `aria-label` stays `Expand map`; no `aria-pressed` state.
-3. `≤1100px`: panel narrows with the responsive grid (270px at ≤1120px, 250px at ≤860px).
-4. `≤680px`: `.ember-map-layout` becomes `flex-direction: column`; the panel stacks below the map inside the scrolling expanded box.
-5. MapLibre resize is not called explicitly after toggling. Add `mapRef.current?.resize()` if canvas sizing breaks.
-
----
-
-## Invariants (do not break)
-
-1. `.map-expanded` is never applied to `.ember-map-canvas` alone.
-2. Panel column width stays 280px in the map section at ≥1121px.
-3. All toolbar controls 32px; no other heights.
-4. `overflow: hidden` stays on `.ember-map-layout`.
-5. Ranking lives in `clusterHotspots()`, not in JSX.
-6. Coordinates print `POINT(lng lat)`.
-7. Panel copy is placeholder; bind data, do not hardcode strings.
-8. No new dependency, no new component, no theme token for these three changes.
+1. `overflow: hidden` stays on `.ember-map-layout` (child corner clipping).
+2. Panel column is 280px in the map section at ≥1121px.
+3. All toolbar controls stay 32px; no new height per breakpoint.
+4. Ranking logic stays in `clusterHotspots()`; coordinates print `POINT(lng lat)`.
+5. No horizontal page scroll at 320 / 360 / 390 / 680 / 860 / 1120 / 1400px.
+6. No new dependency, component or theme token for this work.
 
 ## Acceptance checks
 
-1. `npm run dev`, open `/`: map canvas and incident panel share one bordered card, panel on the right.
-2. Compare control heights: GLOBE/FLAT, NORMAL/REALISTIC, LOCATION, Layers, Export briefing all visually 32px in a single row set.
-3. Click expand: `Priority clusters` and the selected-cluster card remain visible at 1400×1000.
-4. Narrow to 680px: no horizontal page scroll; LOCATION and Layers icon-only.
-5. Clear search / disable clustered hot spots: panel shows `00` and the no-results message, not stale rows.
+| Width | Expect |
+|---|---|
+| 1400 | canvas ≈ 1081×720, floating panel 320px wide with internal scroll, 6+ markers, expanded mode still shows the panel |
+| 860–1120 | two-column card, panel 250–270px, card height `clamp(560px, 78vh, 820px)` |
+| 390 | `document.scrollWidth === 390`; canvas ≈ 390×700; sheet collapsed to a ~60px title bar; chevron expands it to 62% with its own scroll; attribution above the sheet; no compass, no fullscreen |
+| 320/360 | same as 390, control row scrolls horizontally, nothing overflows the page |
+
+---
+
+### Known limitations (state them, do not silently fix)
+
+1. Expand mode has no Escape handler and no backdrop; only the same button closes it, the icon stays `Maximize2`, no `aria-pressed`.
+2. `mapRef.current?.resize()` is not called after toggling expand — add it if canvas sizing ever breaks.
+3. Mobile sheet state (`clustersOpen`) is not persisted and resets on reload.
