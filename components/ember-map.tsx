@@ -303,8 +303,9 @@ function addLandmarkLayers(map: maplibregl.Map, dark: boolean) {
 
 const titleCase = (s: string) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
+// `map.style` is gone once the map is removed (page change); effect cleanups can still run after that.
 const setData = (map: maplibregl.Map, id: string, data: FeatureCollection) =>
-  (map.getSource(id) as GeoJSONSource | undefined)?.setData(data);
+  map.style && (map.getSource(id) as GeoJSONSource | undefined)?.setData(data);
 
 /** [west, south, east, north] of every coordinate in the given features. */
 function bboxOf(features: Feature[]): [number, number, number, number] | null {
@@ -776,6 +777,7 @@ export function EmberMap({
     const map = mapRef.current;
     if (!map || styleVersion === 0) return;
     const drop = () => {
+      if (!map.style) return; // map already removed (leaving the page): nothing to clean up
       if (map.getLayer("ember-wind-field")) map.removeLayer("ember-wind-field");
       if (map.getSource("ember-wind-field")) map.removeSource("ember-wind-field");
     };
