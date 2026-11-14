@@ -1,6 +1,6 @@
 // Temperature / heat-index grid around a place, colored with the "Max Heat Index" scale (°C).
-import { featureCollection, isobands, point } from "@turf/turf";
-import type { FeatureCollection, MultiPolygon } from "geojson";
+import { area, feature, featureCollection, intersect, isobands, point } from "@turf/turf";
+import type { FeatureCollection, MultiPolygon, Polygon } from "geojson";
 import { heatIndexC } from "./action-guide";
 
 // [lower bound °C, color] — ticks 0,5,10,15,20,27,33,40,50 match the reference legend.
@@ -145,4 +145,28 @@ export function contourAreas(
     return [{ ...f, properties: { color: heatColor((a + b) / 2), label: `${Math.round(a)}–${Math.round(b)}°C` } }];
   });
   return { areas: featureCollection(features), coverage: inside / (size * size) };
+}
+
+/**
+ * Keep only the parts of the contour areas inside the place's boundary (e.g. Valencia City),
+ * and re-express coverage as the share of that place covered.
+ */
+export function clipToBoundary(
+  areas: FeatureCollection<MultiPolygon, AreaProps>,
+  boundary: Polygon | MultiPolygon,
+): { areas: FeatureCollection<MultiPolygon, AreaProps>; coverage: number } {
+  const shape = feature(boundary);
+  const total = area(shape);
+  let covered = 0;
+  const features = areas.features.flatMap((band) => {
+    const clipped = intersect(featureCollection([band, shape]));
+    if (!clipped) return [];
+    covered += area(clipped);
+    const geometry: MultiPolygon =
+      clipped.geometry.type === "Polygon"
+        ? { type: "MultiPolygon", coordinates: [clipped.geometry.coordinates] }
+        : clipped.geometry;
+    return [{ type: "Feature" as const, geometry, properties: band.properties }];
+  });
+  return { areas: featureCollection(features), coverage: total > 0 ? Math.min(1, covered / total) : 0 };
 }
