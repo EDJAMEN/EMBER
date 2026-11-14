@@ -91,8 +91,9 @@ export function EmberDashboard() {
     () =>
       baseHotspots.filter((hotspot) => {
         if (confidence !== "all" && hotspot.confidence !== confidence) return false;
-        if (hotspot.source === "VIIRS" && !showViirs) return false;
-        if (hotspot.source === "MODIS" && !showModis) return false;
+        // Fused clusters stay visible while any of their contributing sensors is shown.
+        const sensors = hotspot.sources ?? [hotspot.source];
+        if (!sensors.some((s) => (s === "VIIRS" ? showViirs : showModis))) return false;
         if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
         const query = search.toLowerCase();
         if (
@@ -126,7 +127,7 @@ export function EmberDashboard() {
           <h1>
             Good morning, team<span>.</span>
           </h1>
-          <p>Here’s the latest across your monitored region..............</p>
+          <p>Here’s the latest across your monitored region.</p>
         </div>
         <Button variant="outline" className="ember-export-button" asChild>
           <Link href="/detections">
@@ -268,6 +269,8 @@ export function EmberDashboard() {
                 severity: SEVERITY_OF[h.confidence],
                 lat: h.lat,
                 lng: h.lng,
+                sources: h.sources,
+                footprint: h.geoJsonPolygon,
               }))}
               selected={Math.max(selectedIndex, 0)}
               onSelect={(index) => {
@@ -481,6 +484,8 @@ export function EmberDashboard() {
                   {selectedHotspot.name}
                   <span className="ember-detail-status">
                     {BADGE_OF[selectedHotspot.confidence]} confidence
+                    {selectedHotspot.fusedConfidencePercent !== undefined &&
+                      ` · ${selectedHotspot.fusedConfidencePercent}%`}
                   </span>
                 </div>
                 <p>
@@ -492,7 +497,10 @@ export function EmberDashboard() {
                     <b>{selectedHotspot.count}</b> thermal pixels
                   </span>
                   <span>
-                    <Radio size={13} /> {selectedHotspot.source} · {selectedHotspot.brightness} K
+                    <Radio size={13} />{" "}
+                    {(selectedHotspot.sources ?? [selectedHotspot.source]).join(" + ")} ·{" "}
+                    {selectedHotspot.brightness} K
+                    {selectedHotspot.frp !== undefined && ` · ${selectedHotspot.frp} MW`}
                   </span>
                 </div>
                 <p style={{ marginTop: "8px" }}>

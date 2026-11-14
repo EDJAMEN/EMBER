@@ -19,6 +19,10 @@ export interface Hotspot {
   proximityKm: number;
   dayOffset: number; // 0 = today, negative = days ago
   count: number;
+  frp?: number; // Fire Radiative Power (MW) — the sensor-comparable intensity measure
+  sources?: SensorSource[]; // set on fused clusters
+  fusedConfidencePercent?: number; // set on fused clusters
+  geoJsonPolygon?: import("geojson").Polygon | import("geojson").Point; // fused cluster footprint
 }
 
 export interface AlertItem {

@@ -6,6 +6,7 @@ import {
   normalizeModis,
   normalizeViirs,
 } from "@/lib/hotspots";
+import { harmonizeHotspots } from "@/lib/harmonization";
 
 const BBOX = "124.5,7.3,125.5,8.6"; // west,south,east,north — Bukidnon
 const DAY_RANGE = 2;
@@ -79,8 +80,10 @@ async function fetchSource(
         nearest = town;
       }
     }
+    const frp = Number.parseFloat(row["frp"] ?? "");
     out.push({
-      id: 1000 + i,
+      id: (source === "VIIRS" ? 100000 : 200000) + i, // unique across sensors so fused clusters can trace members
+      frp: Number.isFinite(frp) ? frp : undefined,
       name: `${nearest.municipality} live`,
       source,
       rawConfidence: `${row["confidence"]} (${source === "VIIRS" ? "categorical" : "numeric"})`,
@@ -111,8 +114,10 @@ export async function GET() {
       fetchSource(key, "VIIRS_SNPP_NRT", "VIIRS"),
       fetchSource(key, "MODIS_NRT", "MODIS"),
     ]);
-    const merged = [...viirs, ...modis].sort((a, b) => b.brightness - a.brightness).slice(0, 200);
-    return NextResponse.json({ data: merged });
+    const raw = [...viirs, ...modis];
+    // Fuse overlapping MODIS (1 km) + VIIRS (375 m) pixels into one cluster per thermal event.
+    const fused = harmonizeHotspots(raw).sort((a, b) => b.brightness - a.brightness).slice(0, 200);
+    return NextResponse.json({ data: fused, rawCount: raw.length });
   } catch (err: unknown) {
     const error = err as Error;
     return NextResponse.json({ error: error.message, data: [] }, { status: 500 });

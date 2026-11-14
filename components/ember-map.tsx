@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import type { Point, Polygon } from "geojson";
 
 export type EmberMapIncident = {
   name: string;
@@ -10,6 +11,8 @@ export type EmberMapIncident = {
   severity: string;
   lat: number;
   lng: number;
+  sources?: string[]; // sensors that saw a fused cluster, e.g. ["MODIS", "VIIRS"]
+  footprint?: Polygon | Point; // fused cluster area from lib/harmonization
 };
 
 const CARTO_KEY =
@@ -38,7 +41,7 @@ export function EmberMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.TileLayer | null>(null);
-  const markersRef = useRef<L.Marker[]>([]);
+  const markersRef = useRef<L.Layer[]>([]);
   const selectRef = useRef(onSelect);
   selectRef.current = onSelect;
   const readyRef = useRef(onReady);
@@ -138,7 +141,18 @@ export function EmberMap({
     const map = mapRef.current;
     if (!map) return;
     markersRef.current.forEach((marker) => marker.remove());
-    markersRef.current = incidents.map((incident, index) =>
+    const footprints = incidents.flatMap((incident, index) => {
+      if (incident.footprint?.type !== "Polygon") return [];
+      const color = SEVERITY_COLOR[incident.severity] ?? "#e2481f";
+      const selectedArea = index === selected;
+      return [
+        L.geoJSON(incident.footprint, {
+          interactive: false, // the marker on top handles clicks and tooltips
+          style: { color, weight: selectedArea ? 2 : 1, opacity: 0.8, fillColor: color, fillOpacity: selectedArea ? 0.3 : 0.15 },
+        }).addTo(map),
+      ];
+    });
+    const markers = incidents.map((incident, index) =>
       L.marker([incident.lat, incident.lng], {
         icon: L.divIcon({
           className: "ember-marker",
@@ -148,9 +162,12 @@ export function EmberMap({
         }),
       })
         .addTo(map)
-        .bindTooltip(`${incident.name} · ${incident.count} detections`)
+        .bindTooltip(
+          `${incident.name} · ${incident.count} detections${incident.sources?.length ? ` · ${incident.sources.join(" + ")}` : ""}`,
+        )
         .on("click", () => selectRef.current(index)),
     );
+    markersRef.current = [...footprints, ...markers];
     const current = incidents[selected];
     if (current) map.panTo([current.lat, current.lng], { animate: true });
   }, [incidents, selected]);
