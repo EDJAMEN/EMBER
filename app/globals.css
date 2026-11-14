@@ -206,7 +206,7 @@
 .ember-page-heading h1 { margin: 10px 0 5px; font-size: 27px; font-weight: 650; line-height: 1.18; letter-spacing: 0; }
 .ember-page-heading p { margin: 0; color: var(--muted-foreground); font-size: 12px; }
 .ember-page-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.ember-export-button { height: 34px; border-color: var(--border); border-radius: var(--radius-control); padding: 0 12px; gap: 6px; font-size: 10px; }
+.ember-export-button { height: 32px; border-color: var(--border); border-radius: var(--radius-control); padding: 0 12px; gap: 6px; font-size: 10px; }
 .ember-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--card); }
 .ember-stat { min-width: 0; padding: 15px 17px 14px; }
 .ember-stat + .ember-stat { border-left: 1px solid var(--border); }
@@ -231,13 +231,21 @@
 .ember-section-heading p { margin: 0; color: var(--muted-foreground); font-size: 10px; }
 .ember-section-heading p > span { padding: 0 4px; }
 .ember-map-heading-actions { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.ember-map-control-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ember-map-control-group + .ember-map-control-group { padding-left: 8px; border-left: 1px solid var(--border); }
+/* One control height across the map toolbar. */
+.ember-map-heading-actions .ember-window-selector { height: 32px; align-items: center; }
+.ember-map-heading-actions .ember-window-selector button { height: 24px; }
+.ember-map-heading-actions .ember-layer-button { height: 32px; }
 .ember-window-selector { display: inline-flex; gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--card); padding: 3px; }
 .ember-window-selector button { min-width: 39px; height: 24px; border: 0; border-radius: var(--radius-chip); background: transparent; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; cursor: pointer; }
 .ember-window-selector button.selected { background: var(--accent); color: var(--accent-foreground); font-weight: 650; }
-.ember-layer-button { height: 31px; border-radius: var(--radius-control); padding: 0 10px; gap: 6px; font-size: 10px; }
-/* Page-heading segmented control matches the 34px page action height. */
-.ember-page-actions .ember-window-selector { height: 34px; align-items: center; }
-.ember-page-actions .ember-window-selector button { height: 26px; }
+.ember-layer-button { height: 32px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--card); box-shadow: none; padding: 0 10px; gap: 6px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; }
+.ember-layer-button:hover { background: var(--accent); color: var(--accent-foreground); }
+.ember-layer-button > svg { width: 12px; height: 12px; }
+/* Page-heading segmented control matches the 32px page/map action height. */
+.ember-page-actions .ember-window-selector { height: 32px; align-items: center; }
+.ember-page-actions .ember-window-selector button { height: 24px; }
 .ember-panel, .ember-map-layout { border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--card); }
 .ember-panel { padding: 16px; }
 .ember-map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; overflow: hidden; min-height: 404px; }
@@ -352,7 +360,8 @@
 .ember-footer i { padding: 0 4px; font-style: normal; }
 .ember-footer a { display: inline-flex; align-items: center; color: var(--primary); text-decoration: none; }
 .ember-dismiss { position: fixed; z-index: 25; inset: 0; display: none; border: 0; background: oklch(0.12 0.02 170 / 30%); }
-.map-expanded { position: fixed !important; z-index: 60; inset: 18px; min-height: 0 !important; border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: 0 12px 60px oklch(0.12 0.02 170 / 45%); }
+.map-expanded { position: fixed !important; z-index: 60; inset: 18px; overflow-y: auto; min-height: 0 !important; border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: 0 12px 60px oklch(0.12 0.02 170 / 45%); }
+.map-expanded .ember-map-canvas { height: 100%; min-height: 0; }
 .ember-demo-status { background: color-mix(in oklab, var(--primary) 10%, var(--card)); border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border)); border-radius: var(--radius-control); padding: 4px 10px; }
 
 .ember-shell.ember-shell-collapsed { --ember-sidebar-width: 65px; }
@@ -405,5 +414,40 @@
   .ember-map-section .ember-layer-popover { top: 54px; right: 10px; }
 }
 @media (max-width: 390px) { .ember-map-section .ember-map-layout { margin: 0 -11px; } }
+/* Wide screens: map spans the full card; incident/climate panel floats over it and scrolls. */
+@media (min-width: 1101px) {
+  .ember-map-section .ember-map-layout { display: block; position: relative; min-height: 0; }
+  .ember-map-section .ember-map-canvas { min-height: clamp(560px, 72vh, 720px); }
+  .ember-map-section .ember-incident-panel {
+    position: absolute;
+    z-index: 12;
+    top: 14px;
+    right: 14px;
+    bottom: 14px;
+    width: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: color-mix(in oklab, var(--card) 94%, transparent);
+    box-shadow: 0 12px 40px oklch(0.15 0.02 170 / 22%);
+    backdrop-filter: blur(14px);
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+  }
+  .ember-map-section .ember-incident-panel::-webkit-scrollbar { width: 6px; }
+  .ember-map-section .ember-incident-panel::-webkit-scrollbar-track { background: transparent; }
+  .ember-map-section .ember-incident-panel::-webkit-scrollbar-thumb {
+    border-radius: var(--radius-pill);
+    background: color-mix(in oklab, var(--foreground) 22%, transparent);
+  }
+  .ember-map-section .ember-incident-panel::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--foreground) 38%, transparent);
+  }
+  .ember-map-section .ember-map-search,
+  .ember-map-section .ember-map-tools,
+  .ember-map-section .ember-fullscreen,
+  .ember-map-section .ember-layer-popover { right: calc(320px + 28px); }
+  .ember-map-section .ember-map-legend { max-width: calc(100% - 376px); }
+}
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
 

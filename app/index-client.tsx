@@ -419,6 +419,7 @@ export function EmberDashboard() {
             <p>{regionLabel}</p>
           </div>
           <div className="ember-map-heading-actions">
+            <div className="ember-map-control-group">
             <div className="ember-window-selector" role="radiogroup" aria-label="Map view">
               {(
                 [
@@ -459,9 +460,12 @@ export function EmberDashboard() {
                 </button>
               ))}
             </div>
+            </div>
+            <div className="ember-map-control-group">
             <Button
               variant="outline"
               size="sm"
+              className="ember-layer-button"
               aria-label={`Location: ${focusPlace?.name ?? "Bukidnon region"}. Search a place`}
               title="Search a place"
               onClick={() => {
@@ -526,6 +530,7 @@ export function EmberDashboard() {
             >
               <SlidersHorizontal size={14} /> Layers
             </Button>
+            </div>
           </div>
         </div>
         <div className="ember-map-layout">
@@ -621,7 +626,7 @@ export function EmberDashboard() {
               className="ember-fullscreen"
               aria-label="Expand map"
               onClick={() =>
-                document.querySelector(".ember-map-canvas")?.classList.toggle("map-expanded")
+                document.querySelector(".ember-map-section .ember-map-layout")?.classList.toggle("map-expanded")
               }
             >
               <Maximize2 size={15} />

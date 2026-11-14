@@ -4,7 +4,7 @@ const PAGES = [
   { path: "/", heading: "Good morning, team", nav: "Overview" },
   { path: "/alerts", heading: "Settlement proximity alerts", nav: "Alerts" },
   { path: "/analytics", heading: "Burn-zone analytics", nav: "Analytics" },
-  { path: "/calendar", heading: "Burning calendar", nav: "Calendar" },
+  { path: "/calendar", heading: "Burning calendar", nav: "Burn calendar" },
   { path: "/detections", heading: "Thermal hotspot detections", nav: "Detections" },
   { path: "/ingestion", heading: "NASA FIRMS ingestion", nav: "Ingestion" },
 ];

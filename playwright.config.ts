@@ -7,13 +7,13 @@ export default defineConfig({
   fullyParallel: false,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:3100",
+    baseURL: "http://localhost:3100",
     trace: "on-first-retry",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     command: "npx next dev -p 3100",
-    url: "http://127.0.0.1:3100",
+    url: "http://localhost:3100",
     reuseExistingServer: true,
     timeout: 180_000,
   },
