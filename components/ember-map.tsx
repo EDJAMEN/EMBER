@@ -119,7 +119,71 @@ function addEmberLayers(map: maplibregl.Map, dark: boolean) {
     source: "ember-footprints",
     paint: { "line-color": ["get", "color"], "line-width": ["case", ["get", "sel"], 2, 1], "line-opacity": 0.8 },
   });
+  if (map.getSource("openmaptiles")) addLandmarkLayers(map, dark);
 }
+
+// Landmarks worth naming at street level; emergency services first since EMBER is a fire tool.
+const EMERGENCY = ["hospital", "fire_station", "police"];
+const LANDMARK_CLASSES = [
+  ...EMERGENCY,
+  "town_hall", "school", "college", "place_of_worship", "museum", "attraction", "castle", "monument",
+  "stadium", "library", "theatre", "cinema", "art_gallery", "zoo", "park", "railway", "harbor",
+];
+const LANDMARK_MINZOOM = 15; // only once you've zoomed in far enough to see the 3D structures
+
+/** Named landmarks (OpenMapTiles `poi`): a dot at the exact spot + its name, only at street-level zoom. */
+function addLandmarkLayers(map: maplibregl.Map, dark: boolean) {
+  const filter: maplibregl.FilterSpecification = [
+    "all",
+    ["has", "name"],
+    ["in", ["get", "class"], ["literal", LANDMARK_CLASSES]],
+  ];
+  const color: ExpressionSpecification = [
+    "case",
+    ["in", ["get", "class"], ["literal", EMERGENCY]], "#e2481f",
+    ["in", ["get", "class"], ["literal", ["park", "zoo"]]], "#3c9d5d",
+    "#2f6fde",
+  ];
+  map.addLayer({
+    id: "ember-landmarks-dot",
+    type: "circle",
+    source: "openmaptiles",
+    "source-layer": "poi",
+    minzoom: LANDMARK_MINZOOM,
+    filter,
+    paint: {
+      "circle-color": color,
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], LANDMARK_MINZOOM, 3.5, 18, 6],
+      "circle-stroke-color": dark ? "#111" : "#fff",
+      "circle-stroke-width": 1.5,
+      "circle-pitch-alignment": "viewport", // stays a round dot when the camera tilts
+    },
+  });
+  map.addLayer({
+    id: "ember-landmarks-label",
+    type: "symbol",
+    source: "openmaptiles",
+    "source-layer": "poi",
+    minzoom: LANDMARK_MINZOOM,
+    filter,
+    layout: {
+      "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], LANDMARK_MINZOOM, 10, 18, 13],
+      "text-anchor": "top",
+      "text-offset": [0, 0.7],
+      "text-max-width": 9,
+      "symbol-sort-key": ["coalesce", ["get", "rank"], 99], // most notable landmarks win label collisions
+    },
+    paint: {
+      "text-color": dark ? "#e8e6e1" : "#2b2b2b",
+      "text-halo-color": dark ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.9)",
+      "text-halo-width": 1.4,
+    },
+  });
+}
+
+const titleCase = (s: string) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 const setData = (map: maplibregl.Map, id: string, data: FeatureCollection) =>
   (map.getSource(id) as GeoJSONSource | undefined)?.setData(data);
@@ -219,7 +283,7 @@ export function EmberMap({
       hoveredId = undefined;
     };
     map.on("mousemove", (e) => {
-      const layers = ["ember-areas-fill", "ember-boundary-fill"].filter((id) => map.getLayer(id));
+      const layers = ["ember-landmarks-dot", "ember-areas-fill", "ember-boundary-fill"].filter((id) => map.getLayer(id));
       const top: MapGeoJSONFeature | undefined = map.queryRenderedFeatures(e.point, { layers })[0];
       clearHover();
       if (!top) return void popup.remove();
@@ -227,7 +291,11 @@ export function EmberMap({
         hoveredId = top.id;
         map.setFeatureState({ source: "ember-boundary", id: hoveredId }, { hover: true });
       }
-      popup.setLngLat(e.lngLat).setText(String(top.properties.label ?? top.properties.name ?? "")).addTo(map);
+      const text =
+        top.layer.id === "ember-landmarks-dot"
+          ? `${top.properties["name:en"] ?? top.properties.name} · ${titleCase(String(top.properties.subclass ?? top.properties.class ?? "landmark"))}`
+          : String(top.properties.label ?? top.properties.name ?? "");
+      popup.setLngLat(e.lngLat).setText(text).addTo(map);
     });
     map.on("mouseout", () => {
       clearHover();
@@ -362,7 +430,12 @@ export function EmberMap({
         tileSize: 256,
         maxzoom: 8,
       });
-      const beforeBoundary = map.getLayer("ember-boundary-fill") ? "ember-boundary-fill" : undefined;
+      // Under the basemap's place/road labels (satellite + names, like a hybrid map) and therefore under the
+      // 3D buildings and EMBER's data layers; fall back to those if the style has no labels.
+      const firstBaseLabel = styleLayers.find((l) => l.type === "symbol" && !l.id.startsWith("ember-"))?.id;
+      const beforeBoundary = [firstBaseLabel, "ember-buildings-3d", "ember-boundary-fill"].find(
+        (id): id is string => !!id && !!map.getLayer(id),
+      );
       map.addLayer(
         {
           id: "nasa-gibs-bluemarble-layer",

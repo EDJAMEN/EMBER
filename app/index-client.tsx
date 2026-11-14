@@ -12,6 +12,8 @@ import {
   ChevronRight,
   Droplets,
   Globe,
+  Layers,
+  Satellite,
   Map as MapIcon,
   Flame,
   LocateFixed,
@@ -36,7 +38,7 @@ const EmberMap = dynamic(() => import("@/components/ember-map").then((m) => m.Em
 });
 import { SmartActionGuide } from "@/components/smart-action-guide";
 import { PlaceCombobox } from "@/components/place-combobox";
-import { DEFAULT_PLACE, firmsKey, type GuidePlace } from "@/lib/geocode";
+import { DEFAULT_PLACE, type GuidePlace } from "@/lib/geocode";
 import { conditionsKey, fetchConditions } from "@/lib/conditions";
 import { heatIndexC, heatLevel } from "@/lib/action-guide";
 import { contourAreas, fetchHeatGrid, gridDomain } from "@/lib/heat-grid";
@@ -59,12 +61,13 @@ const VIEWS: OverviewView[] = ["fires", "temperature", "heatindex"];
 const MAP_SEARCH_ID = "ember-map-search-input";
 const OVERVIEW_STORAGE_KEY = "ember.overview.v1";
 
-function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView?: MapView } {
+function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView?: MapView; realistic?: boolean } {
   try {
     const saved = JSON.parse(localStorage.getItem(OVERVIEW_STORAGE_KEY) ?? "null") as {
       place?: Partial<GuidePlace> | null;
       view?: unknown;
       mapView?: unknown;
+      realistic?: unknown;
     } | null;
     const p = saved?.place;
     const validPlace =
@@ -79,6 +82,7 @@ function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView
       place: validPlace ? (p as GuidePlace) : undefined,
       view: VIEWS.includes(saved?.view as OverviewView) ? (saved!.view as OverviewView) : undefined,
       mapView: saved?.mapView === "globe" || saved?.mapView === "mercator" ? saved.mapView : undefined,
+      realistic: typeof saved?.realistic === "boolean" ? saved.realistic : undefined,
     };
   } catch {
     return {};
@@ -107,6 +111,13 @@ export function EmberDashboard() {
   const [place, setPlace] = useState<GuidePlace | null>(null);
   const [view, setView] = useState<OverviewView>("fires");
   const [mapView, setMapView] = useState<MapView>("globe");
+  // blueMarble on = "Realistic" (NASA GIBS satellite imagery); off = "Normal" vector basemap.
+  const [layers, setLayers] = useState<EmberMapLayers>({
+    blueMarble: false,
+    countryBorders: true,
+    firmsWms: true,
+    clusteredHotspots: true,
+  });
   const [restored, setRestored] = useState(false);
   const handleLocate = useCallback((place: GuidePlace) => {
     setPlace(place);
@@ -120,16 +131,20 @@ export function EmberDashboard() {
     if (saved.place) handleLocate(saved.place);
     if (saved.view) setView(saved.view);
     if (saved.mapView) setMapView(saved.mapView);
+    if (saved.realistic !== undefined) setLayers((prev) => ({ ...prev, blueMarble: saved.realistic! }));
     setRestored(true);
   }, [handleLocate]);
   useEffect(() => {
     if (!restored) return;
     try {
-      localStorage.setItem(OVERVIEW_STORAGE_KEY, JSON.stringify({ place, view, mapView }));
+      localStorage.setItem(
+        OVERVIEW_STORAGE_KEY,
+        JSON.stringify({ place, view, mapView, realistic: layers.blueMarble }),
+      );
     } catch {
       // storage blocked (private mode etc.) — the page still works, it just won't remember
     }
-  }, [place, view, mapView, restored]);
+  }, [place, view, mapView, layers.blueMarble, restored]);
 
   const climate = view !== "fires"; // temperature or heat-index view
   const focusPlace = place ?? (climate ? DEFAULT_PLACE : null);
@@ -177,12 +192,6 @@ export function EmberDashboard() {
   const [playing, setPlaying] = useState(false);
   const [live, setLive] = useState(false);
   const [bbox, setBbox] = useState<[number, number, number, number]>([7.3, 124.5, 8.6, 125.5]);
-  const [layers, setLayers] = useState<EmberMapLayers>({
-    blueMarble: true,
-    countryBorders: true,
-    firmsWms: true,
-    clusteredHotspots: true,
-  });
   const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
   const effectiveBbox: [number, number, number, number] = place
     ? [place.lat - 0.5, place.lng - 0.5, place.lat + 0.5, place.lng + 0.5]
@@ -408,6 +417,26 @@ export function EmberDashboard() {
                   className={mapView === key ? "selected" : ""}
                   onClick={() => setMapView(key)}
                   title={key === "globe" ? "3D globe view" : "Flat map view"}
+                >
+                  <Icon size={12} style={{ display: "inline", verticalAlign: "-2px" }} /> {label}
+                </button>
+              ))}
+            </div>
+            <div className="ember-window-selector" role="radiogroup" aria-label="Map style">
+              {(
+                [
+                  [false, "NORMAL", Layers, "Normal map: streets, labels and 3D buildings"],
+                  [true, "REALISTIC", Satellite, "Realistic: NASA GIBS Blue Marble satellite imagery"],
+                ] as const
+              ).map(([realistic, label, Icon, title]) => (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={layers.blueMarble === realistic}
+                  key={label}
+                  className={layers.blueMarble === realistic ? "selected" : ""}
+                  onClick={() => setLayers((prev) => ({ ...prev, blueMarble: realistic }))}
+                  title={title}
                 >
                   <Icon size={12} style={{ display: "inline", verticalAlign: "-2px" }} /> {label}
                 </button>
