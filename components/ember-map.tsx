@@ -121,6 +121,20 @@ function addEmberLayers(map: maplibregl.Map, dark: boolean) {
     source: "ember-areas",
     paint: { "line-color": ["get", "color"], "line-width": 1, "line-opacity": 0.9 },
   });
+  // Border of the selected place (e.g. Valencia City) — heat areas are clipped to it.
+  map.addSource("ember-place-outline", { type: "geojson", data: EMPTY });
+  map.addLayer({
+    id: "ember-place-outline-casing",
+    type: "line",
+    source: "ember-place-outline",
+    paint: { "line-color": dark ? "#000" : "#fff", "line-width": 4, "line-opacity": 0.6 },
+  });
+  map.addLayer({
+    id: "ember-place-outline-line",
+    type: "line",
+    source: "ember-place-outline",
+    paint: { "line-color": dark ? "#fff" : "#1f2937", "line-width": 2, "line-dasharray": [2, 1.5] },
+  });
   map.addSource("ember-footprints", { type: "geojson", data: EMPTY });
   map.addLayer({
     id: "ember-footprints-fill",
@@ -225,6 +239,7 @@ export function EmberMap({
   focus,
   onMapClick,
   areas,
+  outline = null,
   projection = "globe",
   layers = { blueMarble: true, countryBorders: true, firmsWms: true, clusteredHotspots: true },
   showViirs = true,
@@ -240,6 +255,7 @@ export function EmberMap({
   focus?: { lat: number; lng: number; label: string } | null; // picked place: fly there + pin
   onMapClick?: (lat: number, lng: number) => void;
   areas?: FeatureCollection<MultiPolygon, { color: string; label: string }> | null; // temperature / heat-index contours
+  outline?: Polygon | MultiPolygon | null; // border of the selected place; heat areas are clipped to it
   layers?: EmberMapLayers;
   showViirs?: boolean;
   showModis?: boolean;
@@ -761,6 +777,12 @@ export function EmberMap({
         .addTo(map);
     }
   }, [incidents, selected, styleVersion, isZoomedIn]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    setData(map, "ember-place-outline", outline ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: outline, properties: {} }] } : EMPTY);
+  }, [outline, styleVersion]);
 
   return (
     <>

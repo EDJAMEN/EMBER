@@ -41,7 +41,8 @@ import { PlaceCombobox } from "@/components/place-combobox";
 import { DEFAULT_PLACE, type GuidePlace } from "@/lib/geocode";
 import { conditionsKey, fetchConditions } from "@/lib/conditions";
 import { heatIndexC, heatLevel } from "@/lib/action-guide";
-import { contourAreas, fetchHeatGrid, gridDomain } from "@/lib/heat-grid";
+import { clipToBoundary, contourAreas, fetchHeatGrid, gridDomain } from "@/lib/heat-grid";
+import type { BoundaryPayload } from "@/app/api/boundary/route";
 import { ClimatePanel, HeatScaleSlider } from "@/components/climate-panel";
 import { useTheme } from "@/hooks/use-theme";
 import { HOTSPOTS, type Confidence, type Hotspot } from "@/lib/hotspots";
@@ -205,13 +206,27 @@ export function EmberDashboard() {
     : null;
   const rangeLo = range?.[0];
   const rangeHi = range?.[1];
-  const contours = useMemo(
-    () =>
-      gridCells && rangeLo !== undefined && rangeHi !== undefined
-        ? contourAreas(gridCells, metric, rangeLo, rangeHi)
-        : null,
-    [gridCells, metric, rangeLo, rangeHi],
-  );
+  // Border of the place (e.g. Valencia City) so the heat areas cover that place only.
+  const boundaryQuery = useQuery({
+    queryKey: ["boundary", focusPlace?.lat.toFixed(3), focusPlace?.lng.toFixed(3)],
+    queryFn: async (): Promise<BoundaryPayload> => {
+      const res = await fetch(`/api/boundary?lat=${focusPlace!.lat}&lng=${focusPlace!.lng}`);
+      if (!res.ok) throw new Error(`boundary ${res.status}`);
+      return res.json();
+    },
+    enabled: climate && focusPlace !== null,
+    staleTime: Infinity, // borders don't change
+    retry: 1,
+  });
+  const boundary = boundaryQuery.data?.geometry ?? null;
+  const boundaryName = boundaryQuery.data?.name ?? null;
+  const contours = useMemo(() => {
+    if (!gridCells || rangeLo === undefined || rangeHi === undefined) return null;
+    if (boundaryQuery.isLoading) return null; // wait, so the unclipped areas don't flash first
+    const all = contourAreas(gridCells, metric, rangeLo, rangeHi);
+    // No border found (open sea, unmapped area, lookup failed): fall back to the surrounding area.
+    return boundary ? clipToBoundary(all.areas, boundary) : all;
+  }, [gridCells, metric, rangeLo, rangeHi, boundary, boundaryQuery.isLoading]);
   const [confidence, setConfidence] = useState<"all" | Confidence>("all");
   const [showViirs, setShowViirs] = useState(true);
   const [showModis, setShowModis] = useState(true);
@@ -635,6 +650,7 @@ export function EmberDashboard() {
               projection={mapView}
               focus={focusPlace ? { lat: focusPlace.lat, lng: focusPlace.lng, label: pinLabel } : null}
               areas={climate ? (contours?.areas ?? null) : null}
+              outline={climate ? boundary : null}
               onMapClick={
                 climate
                   ? (lat, lng) =>
@@ -853,7 +869,8 @@ export function EmberDashboard() {
                 range={range}
                 onRangeChange={setTempRange}
                 coverage={contours?.coverage ?? null}
-                areasLoading={gridQuery.isLoading}
+                areasLoading={gridQuery.isLoading || boundaryQuery.isLoading}
+                coverageOf={boundary ? (boundaryName ?? focusPlace.name) : null}
               />
             ) : (
               <>
