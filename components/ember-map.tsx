@@ -5,6 +5,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
 export type EmberMapIncident = {
+  id?: number;
   name: string;
   count: number;
   severity: string;
@@ -12,8 +13,18 @@ export type EmberMapIncident = {
   lng: number;
 };
 
-const CARTO_KEY =
-  process.env.NEXT_PUBLIC_CARTO_KEY ?? "cb1_58b4_1_041443cdaab801d99e12e9f7";
+export interface EmberMapLayers {
+  blueMarble: boolean;
+  countryBorders: boolean;
+  firmsWms: boolean;
+  clusteredHotspots: boolean;
+}
+
+const BLUE_MARBLE_URL =
+  "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_NextGeneration/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg";
+
+const NATURAL_EARTH_COUNTRIES_URL =
+  "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson";
 
 const SEVERITY_COLOR: Record<string, string> = {
   critical: "#e2481f",
@@ -26,118 +37,182 @@ export function EmberMap({
   incidents,
   selected,
   onSelect,
-  dark,
+  layers,
+  showViirs,
+  showModis,
+  panSeq,
+  onBoundsChange,
   onReady,
 }: {
   incidents: EmberMapIncident[];
   selected: number;
   onSelect: (index: number) => void;
-  dark: boolean;
+  layers: EmberMapLayers;
+  showViirs: boolean;
+  showModis: boolean;
+  panSeq?: number;
+  onBoundsChange?: (bbox: [number, number, number, number]) => void;
   onReady?: (map: L.Map) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const layerRef = useRef<L.TileLayer | null>(null);
+  const blueMarbleRef = useRef<L.TileLayer | null>(null);
+  const bordersLayerRef = useRef<L.GeoJSON | null>(null);
+  const bordersDataRef = useRef<GeoJSON.GeoJsonObject | null>(null);
+  const wmsLayerRef = useRef<L.TileLayer.WMS | null>(null);
   const markersRef = useRef<L.Marker[]>([]);
   const selectRef = useRef(onSelect);
   selectRef.current = onSelect;
   const readyRef = useRef(onReady);
   readyRef.current = onReady;
+  const boundsChangeRef = useRef(onBoundsChange);
+  boundsChangeRef.current = onBoundsChange;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = L.map(containerRef.current, {
       center: [7.95, 125.05],
       zoom: 9,
+      maxZoom: 18,
       zoomControl: false,
       attributionControl: false,
       scrollWheelZoom: true,
     });
+
+    // Explicit panes enforce bottom-to-top layer order regardless of toggle sequence
+    const bordersPane = map.createPane("bordersPane");
+    bordersPane.style.zIndex = "350";
+    bordersPane.style.pointerEvents = "none";
+
+    const wmsPane = map.createPane("wmsPane");
+    wmsPane.style.zIndex = "400";
+    wmsPane.style.pointerEvents = "none";
+
     mapRef.current = map;
     L.control
       .attribution({ prefix: false })
       .addAttribution(
-        '© <a href="https://www.openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/">CARTO</a>',
+        '<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a> · <a href="https://firms.modaps.eosdis.nasa.gov/">NASA FIRMS</a> · Natural Earth',
       )
       .addTo(map);
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const emitBounds = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        const b = map.getBounds();
+        boundsChangeRef.current?.([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]);
+      }, 450);
+    };
+    map.on("moveend", emitBounds);
+
     readyRef.current?.(map);
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      map.off("moveend", emitBounds);
       map.remove();
       mapRef.current = null;
     };
   }, []);
 
+  // Layer 1: NASA GIBS Blue Marble Basemap (Bottom)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    layerRef.current?.remove();
-    layerRef.current = L.tileLayer(
-      dark
-        ? `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`
-        : `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`,
-      { maxZoom: 19 },
-    ).addTo(map);
-  }, [dark]);
+    blueMarbleRef.current?.remove();
+    blueMarbleRef.current = null;
+    if (!layers.blueMarble) return;
 
+    blueMarbleRef.current = L.tileLayer(BLUE_MARBLE_URL, {
+      maxNativeZoom: 8,
+      maxZoom: 18,
+      tileSize: 256,
+    }).addTo(map);
+  }, [layers.blueMarble]);
+
+  // Layer 2: Natural Earth Country Outlines Overlay
   useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (!layers.countryBorders) {
+      bordersLayerRef.current?.remove();
+      bordersLayerRef.current = null;
+      return;
+    }
+
     let cancelled = false;
-    fetch("https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_PHL_2.json")
-      .then((res) => {
-        if (!res.ok) throw new Error("boundary fetch failed");
-        return res.json();
-      })
-      .then((collection) => {
-        const map = mapRef.current;
-        if (cancelled || !map) return;
-        const props = (f?: { properties?: unknown }) =>
-          (f?.properties ?? {}) as Record<string, unknown>;
-        const nameOf = (f?: { properties?: unknown }) =>
-          ["NAME_2", "NAME_1", "name", "province", "PROVINCE"]
-            .map((key) => props(f)[key])
-            .find((v): v is string => typeof v === "string") ?? "Province";
-        const isBukidnon = (f?: { properties?: unknown }) =>
-          Object.values(props(f)).some(
-            (v) => typeof v === "string" && v.toLowerCase() === "bukidnon",
-          );
-        const layer = L.geoJSON(collection, {
-          style: (f) =>
-            isBukidnon(f as { properties?: unknown })
-              ? { color: "#e2481f", weight: 2.5, fillColor: "#e2481f", fillOpacity: 0.14 }
-              : {
-                  color: "#e2481f",
-                  weight: 1,
-                  opacity: 0.45,
-                  fillColor: "#e2481f",
-                  fillOpacity: 0.04,
-                },
-          onEachFeature: (f, l) => {
-            l.bindTooltip(nameOf(f), { sticky: true });
-            l.on("mouseover", (e) => {
-              const target = e.target as L.Path;
-              target.setStyle({ weight: 3.5, fillOpacity: 0.28 });
-              target.bringToFront();
-            });
-            l.on("mouseout", (e) => {
-              layer.resetStyle(e.target as L.Path);
-            });
-          },
-        }).addTo(map);
-        const buk = layer
-          .getLayers()
-          .find((l) => isBukidnon((l as L.GeoJSON).feature as unknown as { properties?: unknown }));
-        const bounds = (buk as L.GeoJSON | undefined)?.getBounds?.() ?? layer.getBounds();
-        map.fitBounds(bounds, { padding: [24, 24] });
-      })
-      .catch(() => {});
+    const renderBorders = (geojson: GeoJSON.GeoJsonObject) => {
+      if (cancelled || !mapRef.current) return;
+      bordersLayerRef.current?.remove();
+      bordersLayerRef.current = L.geoJSON(geojson, {
+        pane: "bordersPane",
+        interactive: false,
+        style: {
+          color: "#b0b7c3",
+          weight: 1,
+          opacity: 0.9,
+          fill: false,
+          fillOpacity: 0,
+        },
+      }).addTo(mapRef.current);
+    };
+
+    if (bordersDataRef.current) {
+      renderBorders(bordersDataRef.current);
+    } else {
+      fetch(NATURAL_EARTH_COUNTRIES_URL)
+        .then((res) => {
+          if (!res.ok) throw new Error("Natural Earth fetch failed");
+          return res.json() as Promise<GeoJSON.GeoJsonObject>;
+        })
+        .then((geojson) => {
+          bordersDataRef.current = geojson;
+          renderBorders(geojson);
+        })
+        .catch(() => {});
+    }
+
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [layers.countryBorders]);
 
+  // Layer 3: NASA FIRMS 24hr WMS Raster Overlay
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    wmsLayerRef.current?.remove();
+    wmsLayerRef.current = null;
+
+    if (!layers.firmsWms || (!showViirs && !showModis)) return;
+
+    const activeWmsLayers: string[] = [];
+    if (showViirs) activeWmsLayers.push("fires_viirs_24");
+    if (showModis) activeWmsLayers.push("fires_modis_24");
+    if (showViirs) activeWmsLayers.push("fires_landsat_24");
+
+    wmsLayerRef.current = L.tileLayer
+      .wms("/api/firms/wms", {
+        layers: activeWmsLayers.join(","),
+        format: "image/png",
+        transparent: true,
+        version: "1.1.1",
+        pane: "wmsPane",
+        maxZoom: 18,
+      })
+      .addTo(map);
+  }, [layers.firmsWms, showViirs, showModis]);
+
+  // Layer 4: Interactive Hotspot Vector Layer (Top)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     markersRef.current.forEach((marker) => marker.remove());
+    markersRef.current = [];
+
+    if (!layers.clusteredHotspots) return;
+
     markersRef.current = incidents.map((incident, index) =>
       L.marker([incident.lat, incident.lng], {
         icon: L.divIcon({
@@ -151,9 +226,18 @@ export function EmberMap({
         .bindTooltip(`${incident.name} · ${incident.count} detections`)
         .on("click", () => selectRef.current(index)),
     );
+  }, [incidents, selected, layers.clusteredHotspots]);
+
+  // Pan only when user explicitly selects a cluster (not on viewport pan/zoom data refresh)
+  useEffect(() => {
+    if (!panSeq) return;
+    const map = mapRef.current;
     const current = incidents[selected];
-    if (current) map.panTo([current.lat, current.lng], { animate: true });
-  }, [incidents, selected]);
+    if (map && current) {
+      map.panTo([current.lat, current.lng], { animate: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panSeq]);
 
   return <div ref={containerRef} className="ember-leaflet" aria-hidden="true" />;
 }

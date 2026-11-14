@@ -30,10 +30,15 @@ import { Button } from "@/components/ui/button";
 const EmberMap = dynamic(() => import("@/components/ember-map").then((m) => m.EmberMap), {
   ssr: false,
 });
-import { EmberShell } from "@/components/ember-shell";
+import { EmberShell, type EmberLiveStatus } from "@/components/ember-shell";
+import type { EmberMapLayers } from "@/components/ember-map";
 import { useTheme } from "@/hooks/use-theme";
 import { HOTSPOTS, type Confidence } from "@/lib/hotspots";
-import { fetchFirmsHotspots } from "@/lib/firms-client";
+import {
+  clusterHotspots,
+  fetchFirmsWfsHotspots,
+  type ClusteredHotspot,
+} from "@/lib/firms-client";
 import type L from "leaflet";
 
 const SEVERITY_OF: Record<Confidence, string> = {
@@ -48,8 +53,10 @@ const BADGE_OF: Record<Confidence, string> = {
   low: "LOW",
 };
 
+const DEFAULT_BBOX: [number, number, number, number] = [7.3, 124.5, 8.6, 125.5];
+
 export function EmberDashboard() {
-  const { dark } = useTheme();
+  useTheme();
   const mapRef = useRef<L.Map | null>(null);
   const handleMapReady = useCallback((map: L.Map) => {
     mapRef.current = map;
@@ -60,16 +67,26 @@ export function EmberDashboard() {
   const [dayCursor, setDayCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [live, setLive] = useState(false);
+  const [bbox, setBbox] = useState<[number, number, number, number]>(DEFAULT_BBOX);
+  const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
+  const bboxKey = bbox.map((n) => n.toFixed(2)).join(",");
+
   const firmsQuery = useQuery({
-    queryKey: ["firms-hotspots"],
-    queryFn: () => fetchFirmsHotspots(),
+    queryKey: ["firms-wfs", wfsWindow, bboxKey],
+    queryFn: () => fetchFirmsWfsHotspots({ bbox, window: wfsWindow }),
     enabled: live,
-    staleTime: 10 * 60 * 1000,
+    staleTime: 2 * 60 * 1000,
     retry: 1,
   });
-  const baseHotspots = live && firmsQuery.data?.length ? firmsQuery.data : HOTSPOTS;
+
   const [selectedId, setSelectedId] = useState<number>(HOTSPOTS[0]?.id ?? 0);
-  const [selectedLayer, setSelectedLayer] = useState("Thermal anomalies");
+  const [panSeq, setPanSeq] = useState(0);
+  const [layers, setLayers] = useState<EmberMapLayers>({
+    blueMarble: true,
+    countryBorders: true,
+    firmsWms: true,
+    clusteredHotspots: true,
+  });
   const [search, setSearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -87,37 +104,74 @@ export function EmberDashboard() {
     return () => clearInterval(timer);
   }, [playing]);
 
-  const visibleHotspots = useMemo(
-    () =>
-      baseHotspots.filter((hotspot) => {
-        if (confidence !== "all" && hotspot.confidence !== confidence) return false;
-        if (hotspot.source === "VIIRS" && !showViirs) return false;
-        if (hotspot.source === "MODIS" && !showModis) return false;
-        if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
-        const query = search.toLowerCase();
-        if (
-          query &&
-          !`${hotspot.name} ${hotspot.settlement} ${hotspot.municipality}`
-            .toLowerCase()
-            .includes(query)
-        )
-          return false;
-        return true;
-      }),
-    [confidence, showViirs, showModis, dayCursor, search, baseHotspots],
-  );
+  const isLiveFeedActive = live && Boolean(firmsQuery.data);
+
+  const visibleHotspots: ClusteredHotspot[] = useMemo(() => {
+    const query = search.toLowerCase();
+    const matchesFilter = (hotspot: (typeof HOTSPOTS)[number]) => {
+      if (confidence !== "all" && hotspot.confidence !== confidence) return false;
+      if (hotspot.source === "VIIRS" && !showViirs) return false;
+      if (hotspot.source === "MODIS" && !showModis) return false;
+      if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
+      if (
+        query &&
+        !`${hotspot.name} ${hotspot.settlement} ${hotspot.municipality}`
+          .toLowerCase()
+          .includes(query)
+      ) {
+        return false;
+      }
+      return true;
+    };
+
+    if (isLiveFeedActive && firmsQuery.data) {
+      const filteredLive = firmsQuery.data.data.filter(matchesFilter);
+      return clusterHotspots(filteredLive);
+    }
+
+    return HOTSPOTS.filter(matchesFilter).map((h) => ({
+      ...h,
+      highConfidenceCount: h.confidence === "high" ? 1 : 0,
+    }));
+  }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data]);
 
   const selectedHotspot = visibleHotspots.find((h) => h.id === selectedId) ?? visibleHotspots[0];
   const selectedIndex = selectedHotspot ? visibleHotspots.indexOf(selectedHotspot) : 0;
-  const activeCount = visibleHotspots.length;
-  const highCount = visibleHotspots.filter((h) => h.confidence === "high").length;
+  const activeCount = isLiveFeedActive
+    ? visibleHotspots.reduce((sum, h) => sum + h.count, 0)
+    : visibleHotspots.length;
+  const highCount = isLiveFeedActive
+    ? visibleHotspots.reduce((sum, h) => sum + h.highConfidenceCount, 0)
+    : visibleHotspots.filter((h) => h.confidence === "high").length;
   const closest = visibleHotspots.reduce(
     (min, h) => Math.min(min, h.proximityKm),
     visibleHotspots[0]?.proximityKm ?? 0,
   );
 
+  const liveStatus: EmberLiveStatus = useMemo(() => {
+    if (!live) return { mode: "sample", state: "idle" };
+    if (firmsQuery.isFetching) return { mode: "live", state: "loading" };
+    if (firmsQuery.isError) {
+      return {
+        mode: "live",
+        state: "error",
+        errorMessage: firmsQuery.error instanceof Error ? firmsQuery.error.message : "Sync failed",
+      };
+    }
+    const fetchedAt = firmsQuery.data?.fetchedAt;
+    const formattedTime = fetchedAt
+      ? new Date(fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : undefined;
+    return {
+      mode: "live",
+      state: firmsQuery.data ? "synced" : "idle",
+      lastSync: formattedTime,
+      region: firmsQuery.data?.region,
+    };
+  }, [live, firmsQuery.isFetching, firmsQuery.isError, firmsQuery.error, firmsQuery.data]);
+
   return (
-    <EmberShell active="overview" title="Overview">
+    <EmberShell active="overview" title="Overview" liveStatus={liveStatus}>
       <section className="ember-page-heading">
         <div>
           <div className="ember-eyebrow">
@@ -259,10 +313,11 @@ export function EmberDashboard() {
           <div
             className="ember-map-canvas"
             role="img"
-            aria-label="OpenStreetMap-based thermal anomaly map of Bukidnon, Mindanao"
+            aria-label="NASA GIBS Blue Marble and FIRMS thermal anomaly map of Bukidnon, Mindanao"
           >
             <EmberMap
               incidents={visibleHotspots.map((h) => ({
+                id: h.id,
                 name: h.name,
                 count: h.count,
                 severity: SEVERITY_OF[h.confidence],
@@ -272,9 +327,16 @@ export function EmberDashboard() {
               selected={Math.max(selectedIndex, 0)}
               onSelect={(index) => {
                 const hotspot = visibleHotspots[index];
-                if (hotspot) setSelectedId(hotspot.id);
+                if (hotspot) {
+                  setSelectedId(hotspot.id);
+                  setPanSeq((s) => s + 1);
+                }
               }}
-              dark={dark}
+              layers={layers}
+              showViirs={showViirs}
+              showModis={showModis}
+              panSeq={panSeq}
+              onBoundsChange={setBbox}
               onReady={handleMapReady}
             />
 
@@ -344,21 +406,32 @@ export function EmberDashboard() {
                     <X size={14} />
                   </button>
                 </div>
-                {["Thermal anomalies", "Settlement proximity", "Detection heatmap"].map((layer) => (
-                  <button
-                    type="button"
-                    className="ember-layer-option"
-                    key={layer}
-                    onClick={() => setSelectedLayer(layer)}
-                  >
-                    <span>{layer}</span>
-                    <span
-                      className={`ember-layer-check ${selectedLayer === layer ? "checked" : ""}`}
+                {(
+                  [
+                    { key: "blueMarble", label: "Blue Marble" },
+                    { key: "countryBorders", label: "Country Borders" },
+                    { key: "firmsWms", label: "FIRMS WMS Raster Dots" },
+                    { key: "clusteredHotspots", label: "Clustered Hotspots" },
+                  ] as const
+                ).map((item) => {
+                  const checked = layers[item.key];
+                  return (
+                    <button
+                      type="button"
+                      className="ember-layer-option"
+                      key={item.key}
+                      aria-pressed={checked}
+                      onClick={() =>
+                        setLayers((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                      }
                     >
-                      {selectedLayer === layer && <Check size={12} />}
-                    </span>
-                  </button>
-                ))}
+                      <span>{item.label}</span>
+                      <span className={`ember-layer-check ${checked ? "checked" : ""}`}>
+                        {checked && <Check size={12} />}
+                      </span>
+                    </button>
+                  );
+                })}
                 <div className="ember-layer-divider" />
                 <label className="ember-confidence-label">CONFIDENCE</label>
                 <div className="ember-confidence-options">
@@ -433,7 +506,10 @@ export function EmberDashboard() {
                     type="button"
                     className={`ember-incident-row ${active ? "active" : ""}`}
                     key={hotspot.id}
-                    onClick={() => setSelectedId(hotspot.id)}
+                    onClick={() => {
+                      setSelectedId(hotspot.id);
+                      setPanSeq((s) => s + 1);
+                    }}
                   >
                     <span
                       className={`ember-incident-indicator indicator-${SEVERITY_OF[hotspot.confidence]}`}
@@ -492,11 +568,12 @@ export function EmberDashboard() {
                     <b>{selectedHotspot.count}</b> thermal pixels
                   </span>
                   <span>
-                    <Radio size={13} /> {selectedHotspot.source} · {selectedHotspot.brightness} K
+                    <Radio size={13} /> {selectedHotspot.source} ·{" "}
+                    {selectedHotspot.brightness.toFixed(1)} K
                   </span>
                 </div>
                 <p style={{ marginTop: "8px" }}>
-                  POINT({selectedHotspot.lng} {selectedHotspot.lat}) · SRID 4326
+                  POINT({selectedHotspot.lng.toFixed(4)} {selectedHotspot.lat.toFixed(4)}) · SRID 4326
                 </p>
               </div>
             )}
@@ -550,15 +627,18 @@ export function EmberDashboard() {
             <small>
               {live
                 ? firmsQuery.isError
-                  ? "Live feed failed, showing sample data"
-                  : `${firmsQuery.data?.length ?? 0} live hotspots · Bukidnon bbox`
+                  ? firmsQuery.error instanceof Error
+                    ? firmsQuery.error.message
+                    : "Live feed failed, showing sample data"
+                  : `${firmsQuery.data?.rawCount ?? 0} live detections · ${firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"} (${wfsWindow})`
                 : "Live NASA FIRMS feed is not connected"}
             </small>
           </span>
         </div>
         <div className="ember-bottom-right">
           <span>
-            <span className="ember-pulse-dot" /> Demo environment
+            <span className="ember-pulse-dot" />{" "}
+            {live ? (firmsQuery.isError ? "Feed degraded" : "Live FIRMS WFS") : "Demo environment"}
           </span>
           <button aria-label="More system status">
             <MoreHorizontal size={17} />

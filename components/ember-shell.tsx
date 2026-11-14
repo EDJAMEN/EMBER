@@ -32,18 +32,53 @@ const NAV: Array<{ key: EmberNavKey; to: string; label: string; icon: typeof Fla
   { key: "ingestion", to: "/ingestion", label: "Ingestion", icon: Flame },
 ];
 
+export interface EmberLiveStatus {
+  mode: "sample" | "live";
+  state: "idle" | "loading" | "synced" | "error";
+  lastSync?: string;
+  region?: string;
+  errorMessage?: string;
+}
+
 export function EmberShell({
   active,
   title,
+  liveStatus,
   children,
 }: {
   active?: EmberNavKey;
   title: string;
+  liveStatus?: EmberLiveStatus;
   children: ReactNode;
 }) {
   const { dark, toggle } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
   const pathname = usePathname();
+  const isLive = liveStatus?.mode === "live";
+
+  const pillLabel = !isLive
+    ? "DEMO PREVIEW"
+    : liveStatus.state === "loading"
+      ? "SYNCING..."
+      : liveStatus.state === "error"
+        ? "FEED ERROR"
+        : "LIVE FEED";
+
+  const sidebarSubtitle = !isLive
+    ? "Sample data preview"
+    : liveStatus.state === "loading"
+      ? "Syncing NASA FIRMS WFS..."
+      : liveStatus.state === "error"
+        ? liveStatus.errorMessage || "Connection error"
+        : `${liveStatus.region === "Global" ? "Global" : "SE Asia"} · ${liveStatus.lastSync ?? "Just now"}`;
+
+  const updatedLabel = isLive
+    ? liveStatus.state === "loading"
+      ? "Syncing..."
+      : liveStatus.lastSync
+        ? `Synced ${liveStatus.lastSync}`
+        : "Live feed"
+    : "Updated 2 min ago";
 
   return (
     <main className="ember-shell min-h-screen bg-background text-foreground">
@@ -83,7 +118,7 @@ export function EmberShell({
           <span className="ember-pulse-dot" />
           <div>
             <p>FIRMS connection</p>
-            <span>Sample data preview</span>
+            <span>{sidebarSubtitle}</span>
           </div>
           <ChevronDown size={14} />
         </div>
@@ -119,11 +154,11 @@ export function EmberShell({
             <b>{title}</b>
           </div>
           <div className="ember-top-actions">
-            <div className="ember-live-status ember-demo-status">
-              <span className="ember-pulse-dot" /> DEMO PREVIEW
+            <div className={`ember-live-status ${isLive ? "" : "ember-demo-status"}`}>
+              <span className="ember-pulse-dot" /> {pillLabel}
             </div>
             <span className="ember-top-divider" />
-            <span className="ember-updated">Updated 2 min ago</span>
+            <span className="ember-updated">{updatedLabel}</span>
             <Button
               variant="ghost"
               size="icon"
