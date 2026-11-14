@@ -24,20 +24,22 @@ export function AlertsPage() {
       <section className="ember-page-heading">
         <div>
           <div className="ember-eyebrow">
-            <span /> DRRMC EARLY RESPONSE <span className="ember-eyebrow-date">/ BUKIDNON</span>
+            <span /> DRRMC EARLY RESPONSE
           </div>
           <h1>
             Settlement proximity alerts<span>.</span>
           </h1>
-          <p>Sample proximity tiers computed against populated zones.</p>
+          <p>Proximity tiers computed against populated zones.</p>
         </div>
-        <Button
-          variant="outline"
-          className="ember-export-button"
-          onClick={() => setAlerts((prev) => prev.map((a) => ({ ...a, dispatched: true })))}
-        >
-          Broadcast bulletin
-        </Button>
+        <div className="ember-page-actions">
+          <Button
+            variant="outline"
+            className="ember-export-button"
+            onClick={() => setAlerts((prev) => prev.map((a) => ({ ...a, dispatched: true })))}
+          >
+            Broadcast bulletin
+          </Button>
+        </div>
       </section>
 
       <section className="ember-stat-grid" aria-label="Threat tiers">
@@ -47,36 +49,24 @@ export function AlertsPage() {
             <span className="ember-pulse-dot" />
           </div>
           <div className="ember-stat-number">{countOf("CRITICAL")}</div>
-          <div className="ember-stat-foot">
-            <span>Immediate dispatch required</span>
-          </div>
         </article>
         <article className="ember-stat">
           <div className="ember-stat-top">
             <span>ELEVATED (3 – 6 KM)</span>
           </div>
           <div className="ember-stat-number">{countOf("ELEVATED")}</div>
-          <div className="ember-stat-foot">
-            <span>Containment unit on standby</span>
-          </div>
         </article>
         <article className="ember-stat">
           <div className="ember-stat-top">
             <span>ADVISORY (6 – 10 KM)</span>
           </div>
           <div className="ember-stat-number">{countOf("ADVISORY")}</div>
-          <div className="ember-stat-foot">
-            <span>Situational advisory active</span>
-          </div>
         </article>
         <article className="ember-stat">
           <div className="ember-stat-top">
             <span>DISPATCHED</span>
           </div>
           <div className="ember-stat-number">{alerts.filter((a) => a.dispatched).length}</div>
-          <div className="ember-stat-foot">
-            <span>Units confirmed out</span>
-          </div>
         </article>
       </section>
 
@@ -84,7 +74,7 @@ export function AlertsPage() {
         <div className="ember-section-heading">
           <div>
             <h2>Active alerts</h2>
-            <p>Sample data · live feed not connected</p>
+            <p>Sorted by nearest settlement</p>
           </div>
           <div className="ember-window-selector" aria-label="Threat filter">
             {(["all", "CRITICAL", "ELEVATED", "ADVISORY"] as Level[]).map((level) => (
@@ -108,7 +98,7 @@ export function AlertsPage() {
           }}
         >
           {filtered.map((alertItem) => (
-            <article key={alertItem.id} className="ember-selected-detail" style={{ margin: 0 }}>
+            <article key={alertItem.id} className="ember-panel">
               <div className="ember-detail-kicker">
                 <span>{alertItem.threatLevel}</span>
                 <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
@@ -138,9 +128,10 @@ export function AlertsPage() {
                 <Button
                   variant={alertItem.dispatched ? "secondary" : "default"}
                   size="sm"
+                  className="ember-layer-button"
                   onClick={() => toggleDispatch(alertItem.id)}
                 >
-                  {alertItem.dispatched ? "✓ Dispatched" : "Dispatch unit"}
+                  {alertItem.dispatched ? "Dispatched" : "Dispatch unit"}
                 </Button>
               </div>
             </article>
@@ -165,8 +156,7 @@ export function AlertsPage() {
           onClick={() => setActiveModal(null)}
         >
           <div
-            className="ember-layer-popover"
-            style={{ position: "static", width: "min(480px, 100%)" }}
+            className="ember-layer-popover ember-modal"
             onClick={(event) => event.stopPropagation()}
           >
             <div>
@@ -186,11 +176,17 @@ export function AlertsPage() {
             <div
               style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "10px" }}
             >
-              <Button variant="outline" size="sm" onClick={() => setActiveModal(null)}>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ember-layer-button"
+                onClick={() => setActiveModal(null)}
+              >
                 Close
               </Button>
               <Button
                 size="sm"
+                className="ember-layer-button"
                 onClick={() => {
                   toggleDispatch(activeModal.id);
                   setActiveModal(null);

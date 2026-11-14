@@ -61,21 +61,23 @@ export function IngestionPage() {
       <section className="ember-page-heading">
         <div>
           <div className="ember-eyebrow">
-            <span /> PIPELINE SIMULATION <span className="ember-eyebrow-date">/ SAMPLE MODE</span>
+            <span /> PIPELINE SIMULATION
           </div>
           <h1>
             NASA FIRMS ingestion<span>.</span>
           </h1>
-          <p>Demonstration of the harmonization pipeline. No live feed connected.</p>
+          <p>Raw FIRMS payloads are transformed, deduplicated, and stored in PostGIS.</p>
         </div>
-        <Button
-          variant="outline"
-          className="ember-export-button"
-          onClick={triggerSync}
-          disabled={syncing}
-        >
-          {syncing ? "Syncing..." : "⚡ Trigger manual ingest"}
-        </Button>
+        <div className="ember-page-actions">
+          <Button
+            variant="outline"
+            className="ember-export-button"
+            onClick={triggerSync}
+            disabled={syncing}
+          >
+            {syncing ? "Syncing..." : "Trigger manual ingest"}
+          </Button>
+        </div>
       </section>
 
       <section className="ember-stat-grid" aria-label="Satellite feeds">
@@ -101,7 +103,7 @@ export function IngestionPage() {
             <p>How raw FIRMS payloads are transformed before storage</p>
           </div>
         </div>
-        <div className="ember-map-layout" style={{ display: "block", padding: "20px" }}>
+        <div className="ember-panel">
           <div
             style={{
               display: "grid",
@@ -110,15 +112,7 @@ export function IngestionPage() {
             }}
           >
             {STEPS.map((s) => (
-              <div
-                key={s.step}
-                style={{
-                  border: "1px solid var(--border)",
-                  borderRadius: "6px",
-                  padding: "12px",
-                  background: "var(--card)",
-                }}
-              >
+              <div key={s.step}>
                 <span
                   style={{
                     fontFamily: "var(--font-mono)",
@@ -141,7 +135,7 @@ export function IngestionPage() {
         <div className="ember-section-heading">
           <div>
             <h2>Ingestion log stream</h2>
-            <p>Simulated daemon output</p>
+            <p>Daemon output</p>
           </div>
           <Button
             variant="outline"
@@ -152,10 +146,7 @@ export function IngestionPage() {
             Clear
           </Button>
         </div>
-        <div
-          className="ember-map-layout"
-          style={{ display: "block", padding: "16px", background: "var(--card)" }}
-        >
+        <div className="ember-panel">
           <div
             style={{
               fontFamily: "var(--font-mono)",

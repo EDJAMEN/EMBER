@@ -37,3 +37,9 @@ coverage
 *.njsprojno
 *.sln
 *.sw?
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+

@@ -46,28 +46,30 @@ export function CalendarPage() {
       <section className="ember-page-heading">
         <div>
           <div className="ember-eyebrow">
-            <span /> SEASONALITY <span className="ember-eyebrow-date">/ BUKIDNON</span>
+            <span /> SEASONALITY
           </div>
           <h1>
             Burning calendar<span>.</span>
           </h1>
-          <p>Illustrative sample data: daily and monthly detection frequency, peak burn season, and how this period compares with past years.</p>
+          <p>Daily and monthly detection frequency, peak burn season, and how this period compares with past years.</p>
         </div>
-        <div className="ember-window-selector" aria-label="Year">
-          {YEARS.map((y) => (
-            <button
-              type="button"
-              key={y}
-              aria-pressed={year === y}
-              className={year === y ? "selected" : ""}
-              onClick={() => {
-                setYear(y);
-                if (MONTHLY.get(y)![month] === null) setMonth(LAST_MONTH);
-              }}
-            >
-              {y}
-            </button>
-          ))}
+        <div className="ember-page-actions">
+          <div className="ember-window-selector" aria-label="Year">
+            {YEARS.map((y) => (
+              <button
+                type="button"
+                key={y}
+                aria-pressed={year === y}
+                className={year === y ? "selected" : ""}
+                onClick={() => {
+                  setYear(y);
+                  if (MONTHLY.get(y)![month] === null) setMonth(LAST_MONTH);
+                }}
+              >
+                {y}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -126,7 +128,7 @@ export function CalendarPage() {
             <p>Each square is one day; brighter means more detections</p>
           </div>
         </div>
-        <div className="ember-map-layout" style={{ display: "block", padding: "20px", minHeight: 0 }}>
+        <div className="ember-panel">
           <div style={{ overflowX: "auto" }}>
             <div
               role="img"
@@ -140,7 +142,7 @@ export function CalendarPage() {
                 <span
                   key={d.date}
                   title={`${d.date}: ${d.count} detections`}
-                  style={{ background: viridis(d.count, maxDay), borderRadius: "2px" }}
+                  style={{ background: viridis(d.count, maxDay), borderRadius: "var(--radius-chip)" }}
                 />
               ))}
             </div>
@@ -156,7 +158,7 @@ export function CalendarPage() {
             <p>Select a month to compare it with the same month in other years. Peak season columns are marked ▲.</p>
           </div>
         </div>
-        <div className="ember-map-layout" style={{ display: "block", padding: "20px", minHeight: 0 }}>
+        <div className="ember-panel">
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "separate", borderSpacing: "3px", fontSize: "10px" }}>
               <thead>
@@ -192,7 +194,7 @@ export function CalendarPage() {
                             style={{
                               width: "44px",
                               height: "28px",
-                              borderRadius: "3px",
+                              borderRadius: "var(--radius-chip)",
                               background: v === null ? "transparent" : viridis(v, MAX_MONTH),
                               color: v !== null && v / MAX_MONTH >= 4 / VIRIDIS.length ? "#111" : "#fff",
                               outline: selected ? "2px solid var(--foreground)" : "none",
@@ -227,9 +229,9 @@ function Legend() {
   return (
     <div style={{ ...mono, display: "flex", alignItems: "center", gap: "4px", marginTop: "12px" }}>
       <span>Fewer</span>
-      <span style={{ width: "11px", height: "11px", borderRadius: "2px", background: "var(--muted)" }} />
+      <span style={{ width: "11px", height: "11px", borderRadius: "var(--radius-chip)", background: "var(--muted)" }} />
       {VIRIDIS.map((c) => (
-        <span key={c} style={{ width: "11px", height: "11px", borderRadius: "2px", background: c }} />
+        <span key={c} style={{ width: "11px", height: "11px", borderRadius: "var(--radius-chip)", background: c }} />
       ))}
       <span>More</span>
     </div>

@@ -372,8 +372,7 @@ export function EmberMap({
   selectRef.current = onSelect;
   const readyRef = useRef(onReady);
   readyRef.current = onReady;
-  const darkRef = useRef(dark);
-  const projectionRef = useRef(projection);
+  const darkRef = useRef(dark);  const projectionRef = useRef(projection);
   const boundsChangeRef = useRef(onBoundsChange);
   boundsChangeRef.current = onBoundsChange;
   const viewChangeRef = useRef(onViewChange);
@@ -385,6 +384,20 @@ export function EmberMap({
   const [boundary, setBoundary] = useState<FeatureCollection | null>(null);
   // Bumped on every style (re)load so data effects re-push into the fresh sources.
   const [styleVersion, setStyleVersion] = useState(0);
+  // WMS tiles 503 without a server key, so only mount the source once the proxy confirms one.
+  const [wmsReady, setWmsReady] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/firms/wms", { method: "HEAD" })
+      .then((res) => {
+        if (active) setWmsReady(res.ok);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -392,12 +405,15 @@ export function EmberMap({
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: styleUrl(darkRef.current),
-      center: [0, 15],
+      center: [125.05, 7.95], // start on the monitored region so fire markers are on the visible hemisphere
       zoom: 1.2,
       attributionControl: { compact: true },
       maxPitch: 60,
     });
     mapRef.current = map;
+    // Keep the canvas in step with layout changes (sidebar collapse, panel resize) instead of only window resize.
+    const resizeObserver = new ResizeObserver(() => map.resize());
+    resizeObserver.observe(containerRef.current);
 
     // Zoom-driven tilt, applied inside every camera update (wheel, pinch, buttons, flyTo) so it never
     // interrupts an animation the way calling setPitch from a "zoom" listener would.
@@ -456,6 +472,7 @@ export function EmberMap({
     readyRef.current?.(map);
     return () => {
       if (boundsTimer) clearTimeout(boundsTimer);
+      resizeObserver.disconnect();
       map.off("moveend", emitBounds);
       map.remove();
       mapRef.current = null;
@@ -481,12 +498,18 @@ export function EmberMap({
 
   useEffect(() => {
     let cancelled = false;
-    fetch("https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_PHL_2.json")
+    // A slow or blocked GADM download must not strand the camera on the globe with the fires behind it.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    fetch("https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_PHL_2.json", {
+      signal: controller.signal,
+    })
       .then((res) => {
         if (!res.ok) throw new Error("boundary fetch failed");
         return res.json() as Promise<FeatureCollection>;
       })
       .then((collection) => {
+        clearTimeout(timeout);
         const map = mapRef.current;
         if (cancelled || !map) return;
         const props = (f: Feature) => (f.properties ?? {}) as Record<string, unknown>;
@@ -506,11 +529,14 @@ export function EmberMap({
         if (box && !focusRef.current) map.fitBounds(box, { padding: 24, duration: 3000 });
       })
       .catch(() => {
+        clearTimeout(timeout);
         const map = mapRef.current;
         if (!cancelled && map && !focusRef.current) map.flyTo({ center: [125.05, 7.95], zoom: 8, duration: 3000 });
       });
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
+      controller.abort();
     };
   }, []);
 
@@ -620,7 +646,7 @@ export function EmberMap({
     if (map.getLayer("nasa-firms-wms-layer")) map.removeLayer("nasa-firms-wms-layer");
     if (map.getSource("nasa-firms-wms")) map.removeSource("nasa-firms-wms");
 
-    if (layers.firmsWms && activeWmsLayers.length > 0) {
+    if (wmsReady && layers.firmsWms && activeWmsLayers.length > 0) {
       map.addSource("nasa-firms-wms", {
         type: "raster",
         tiles: [
@@ -634,7 +660,7 @@ export function EmberMap({
         source: "nasa-firms-wms",
       });
     }
-  }, [styleVersion, layers.blueMarble, layers.countryBorders, layers.firmsWms, showViirs, showModis]);
+  }, [styleVersion, layers.blueMarble, layers.countryBorders, layers.firmsWms, wmsReady, showViirs, showModis]);
 
   // Fire clusters: glowing count markers (DOM, unaffected by style reloads).
   useEffect(() => {

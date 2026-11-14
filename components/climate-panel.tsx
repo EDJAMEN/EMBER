@@ -16,7 +16,7 @@ export function HeatScaleLegend({ title, dark = false }: { title: string; dark?:
   return (
     <div role="img" aria-label={`${title}: color scale from 0 to above 50 °C`} style={{ fontSize: "9px", color: dark ? "oklch(0.97 0.01 90)" : undefined }}>
       <div style={{ fontWeight: 700, textAlign: "center", marginBottom: "4px" }}>{title}</div>
-      <div style={{ display: "flex", height: "10px", borderRadius: "5px", overflow: "hidden", border: "1px solid rgb(0 0 0 / 35%)" }}>
+      <div style={{ display: "flex", height: "10px", borderRadius: "var(--radius-pill)", overflow: "hidden", border: "1px solid rgb(0 0 0 / 35%)" }}>
         {swatches.map((c) => (
           <span key={c} style={{ flex: 1, background: c }} />
         ))}
@@ -59,7 +59,7 @@ export function HeatScaleSlider({
     display: "block",
     width: "18px",
     height: "18px",
-    borderRadius: "50%",
+    borderRadius: "var(--radius-pill)",
     background: "#fff",
     border: "2px solid #111",
     boxShadow: "0 1px 5px rgb(0 0 0 / 45%)",
@@ -85,16 +85,16 @@ export function HeatScaleSlider({
         style={{ position: "relative", display: "flex", alignItems: "center", width: "100%", height: "24px", touchAction: "none", userSelect: "none" }}
       >
         <SliderPrimitive.Track
-          style={{ position: "relative", flexGrow: 1, height: "12px", borderRadius: "6px", background: `linear-gradient(to right, ${bands})`, border: "1px solid rgb(0 0 0 / 45%)" }}
+          style={{ position: "relative", flexGrow: 1, height: "12px", borderRadius: "var(--radius-pill)", background: `linear-gradient(to right, ${bands})`, border: "1px solid rgb(0 0 0 / 45%)" }}
         >
           {domain && (
             // Faint marker of the temperatures present around this place.
             <span
               aria-hidden
-              style={{ position: "absolute", top: "-4px", bottom: "-4px", left: pct(domain[0]), right: `calc(100% - ${pct(domain[1])})`, border: "1px dashed rgb(255 255 255 / 55%)", borderRadius: "4px" }}
+              style={{ position: "absolute", top: "-4px", bottom: "-4px", left: pct(domain[0]), right: `calc(100% - ${pct(domain[1])})`, border: "1px dashed rgb(255 255 255 / 55%)", borderRadius: "var(--radius-control)" }}
             />
           )}
-          <SliderPrimitive.Range style={{ position: "absolute", height: "100%", borderRadius: "6px", boxShadow: "0 0 0 2px #fff" }} />
+          <SliderPrimitive.Range style={{ position: "absolute", height: "100%", borderRadius: "var(--radius-pill)", boxShadow: "0 0 0 2px #fff" }} />
         </SliderPrimitive.Track>
         <SliderPrimitive.Thumb aria-label={`Lowest ${title.toLowerCase()}`} style={thumb} />
         <SliderPrimitive.Thumb aria-label={`Highest ${title.toLowerCase()}`} style={thumb} />
@@ -162,7 +162,7 @@ function RangePicker({
     display: "block",
     width: "20px",
     height: "20px",
-    borderRadius: "50%",
+    borderRadius: "var(--radius-pill)",
     background: "var(--background)",
     border: "2px solid var(--foreground)",
     boxShadow: "0 1px 4px rgb(0 0 0 / 30%)",
@@ -195,9 +195,9 @@ function RangePicker({
         style={{ position: "relative", display: "flex", alignItems: "center", width: "100%", height: "28px", marginTop: "8px", touchAction: "none", userSelect: "none" }}
       >
         <SliderPrimitive.Track
-          style={{ position: "relative", flexGrow: 1, height: "10px", borderRadius: "5px", background: `linear-gradient(to right, ${stops})`, border: "1px solid rgb(0 0 0 / 25%)" }}
+          style={{ position: "relative", flexGrow: 1, height: "10px", borderRadius: "var(--radius-pill)", background: `linear-gradient(to right, ${stops})`, border: "1px solid rgb(0 0 0 / 25%)" }}
         >
-          <SliderPrimitive.Range style={{ position: "absolute", height: "100%", borderRadius: "5px", boxShadow: "0 0 0 2px var(--foreground)" }} />
+          <SliderPrimitive.Range style={{ position: "absolute", height: "100%", borderRadius: "var(--radius-pill)", boxShadow: "0 0 0 2px var(--foreground)" }} />
         </SliderPrimitive.Track>
         <SliderPrimitive.Thumb aria-label={`Lowest ${what}`} style={thumb} />
         <SliderPrimitive.Thumb aria-label={`Highest ${what}`} style={thumb} />
@@ -290,7 +290,7 @@ function Big({ value, label }: { value: number | null; label: string }) {
         style={{
           width: "14px",
           height: "40px",
-          borderRadius: "4px",
+          borderRadius: "var(--radius-control)",
           background: value === null ? "var(--muted)" : heatColor(value),
           border: "1px solid rgb(0 0 0 / 25%)",
         }}
