@@ -21,8 +21,6 @@ import {
   Maximize2,
   Minus,
   MoreHorizontal,
-  Pause,
-  Play,
   Plus,
   Radio,
   Search,
@@ -53,9 +51,20 @@ import { EmberShell, type EmberLiveStatus } from "@/components/ember-shell";
 import type { EmberMapInstance, EmberMapLayers } from "@/components/ember-map";
 import {
   clusterHotspots,
+  computeHarmonizationStats,
   fetchFirmsWfsHotspots,
+  unharmonizedHotspots,
   type ClusteredHotspot,
 } from "@/lib/firms-client";
+import { HistoricalFireNavigator } from "@/components/historical-fire-navigator";
+import { formatShortDate } from "@/lib/historical-fires";
+import {
+  buildTimelineSteps,
+  hotspotMatchesStep,
+  type Granularity,
+  type QuickRange,
+  type SpanDays,
+} from "@/lib/timeline";
 
 const NO_HOTSPOTS: Hotspot[] = []; // stable empty list so memoized map data doesn't change every render
 
@@ -139,7 +148,6 @@ export function EmberDashboard() {
   const handleLocate = useCallback((place: GuidePlace) => {
     setPlace(place);
     setLive(true);
-    setDayCursor(0);
   }, []);
 
   // Survive a refresh: restore the last place + view, then keep them saved (per-browser convenience only).
@@ -271,11 +279,43 @@ export function EmberDashboard() {
   const [confidence, setConfidence] = useState<"all" | Confidence>("all");
   const [showViirs, setShowViirs] = useState(true);
   const [showModis, setShowModis] = useState(true);
-  const [dayCursor, setDayCursor] = useState(0);
+  const [harmonized, setHarmonized] = useState(true);
+  const [todayStr] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [quickRange, setQuickRange] = useState<QuickRange | null>("today");
+  const [granularity, setGranularity] = useState<Granularity>("daily");
+  const [historicalDate, setHistoricalDate] = useState<string | null>(null);
+  const [spanDays, setSpanDays] = useState<SpanDays>(1);
+  const [scrubIndex, setScrubIndex] = useState<number>(1);
   const [playing, setPlaying] = useState(false);
   const [live, setLive] = useState(true); // real NASA FIRMS by default; sample data only on request
   const [bbox, setBbox] = useState<[number, number, number, number]>([7.3, 124.5, 8.6, 125.5]);
-  const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
+
+  const timelineModel = useMemo(
+    () =>
+      buildTimelineSteps({
+        todayStr,
+        historicalDate,
+        spanDays,
+        granularity,
+        quickRange,
+      }),
+    [todayStr, historicalDate, spanDays, granularity, quickRange],
+  );
+  const clampedScrubIndex = Math.max(
+    0,
+    Math.min(Math.max(0, timelineModel.steps.length - 1), scrubIndex),
+  );
+  const activeStep = timelineModel.steps[clampedScrubIndex] ?? timelineModel.steps[0]!;
+  const isHistoricalMode = timelineModel.isHistorical;
+  const activeScrubDate = activeStep.date;
+  const activeYear = Number(activeScrubDate.slice(0, 4));
+  const isModisEraOnly = activeYear >= 2000 && activeYear <= 2011;
+  const effectiveShowViirs = !isModisEraOnly && showViirs;
+
+  const wfsWindow: "24h" | "7d" =
+    spanDays > 1 || (quickRange !== "today" && quickRange !== "24h") ? "7d" : "24h";
+  const effectiveSensorParam: "BOTH" | "VIIRS" | "MODIS" =
+    effectiveShowViirs && showModis ? "BOTH" : effectiveShowViirs ? "VIIRS" : "MODIS";
   // Search the chosen area's extent plus ~NEARBY_KM around it ([minLat, minLon, maxLat, maxLon]), so fires just
   // outside the border (which the wind can push in) are known; ~55 km square only without a border.
   // shortcut: an area crossing the dateline is clamped at ±180°, so its far side is not searched; split the box if that matters.
@@ -287,15 +327,33 @@ export function EmberDashboard() {
   const bboxKey = effectiveBbox.map((n) => n.toFixed(2)).join(",");
   const near = place ? { lat: place.lat, lng: place.lng, name: place.name } : null; // distances are from the searched point
   const firmsQuery = useQuery({
-    queryKey: ["firms-wfs", wfsWindow, bboxKey, near?.lat, near?.lng, near?.name],
-    placeholderData: keepPreviousData, // zoom/pan: keep the fires on screen while the new area loads
-    queryFn: () => fetchFirmsWfsHotspots({ bbox: effectiveBbox, window: wfsWindow, near }),
+    queryKey: [
+      "firms-wfs",
+      wfsWindow,
+      historicalDate ?? "live",
+      spanDays,
+      isModisEraOnly ? "MODIS" : "BOTH",
+      bboxKey,
+      near?.lat,
+      near?.lng,
+      near?.name,
+    ],
+    placeholderData: keepPreviousData, // zoom/pan/scrub: keep fires on screen while loading
+    queryFn: () =>
+      fetchFirmsWfsHotspots({
+        bbox: effectiveBbox,
+        window: wfsWindow,
+        near,
+        date: historicalDate ?? (spanDays > 7 ? timelineModel.startDate : null),
+        days: historicalDate || spanDays > 7 ? spanDays : undefined,
+        sensor: effectiveSensorParam,
+      }),
     // Wait for the area's border, so the first request already covers the right area.
-    enabled: live && (!place || areaSettled || borderMissing),
+    enabled: (live || isHistoricalMode) && (!place || areaSettled || borderMissing),
     staleTime: 2 * 60 * 1000,
     retry: 1,
   });
-  const isLiveFeedActive = live && Boolean(firmsQuery.data);
+  const isLiveFeedActive = (live || isHistoricalMode) && Boolean(firmsQuery.data);
   const regionLabel = place ? [place.name, place.region].filter(Boolean).join(" · ") : "Bukidnon, Mindanao · Philippines";
   const [selectedId, setSelectedId] = useState<number>(HOTSPOTS[0]?.id ?? 0);
   const [selectedLayer, setSelectedLayer] = useState("Thermal anomalies");
@@ -305,18 +363,125 @@ export function EmberDashboard() {
   useEffect(() => {
     if (!playing) return;
     const timer = setInterval(() => {
-      setDayCursor((day) => {
-        if (day <= -6) {
+      setScrubIndex((idx) => {
+        if (idx >= timelineModel.steps.length - 1) {
           setPlaying(false);
-          return 0;
+          return idx;
         }
-        return day - 1;
+        return idx + 1;
       });
-    }, 1200);
+    }, granularity === "subdaily" ? 900 : 1200);
     return () => clearInterval(timer);
-  }, [playing]);
+  }, [playing, timelineModel.steps.length, granularity]);
 
-  // Individual detections passing the filters (live FIRMS pixels, or the sample set).
+  const handleSelectQuickRange = useCallback(
+    (next: QuickRange) => {
+      const nextSpan: SpanDays = next === "7d" ? 7 : next === "3d" ? 3 : 1;
+      const nextSteps = buildTimelineSteps({
+        todayStr,
+        historicalDate: null,
+        spanDays: nextSpan,
+        granularity,
+        quickRange: next,
+      }).steps;
+      setQuickRange(next);
+      setHistoricalDate(null);
+      setSpanDays(nextSpan);
+      setPlaying(false);
+      setScrubIndex(Math.max(0, nextSteps.length - 1));
+    },
+    [todayStr, granularity],
+  );
+
+  const handleChangeGranularity = useCallback(
+    (nextGran: Granularity) => {
+      const prevMax = Math.max(1, timelineModel.steps.length - 1);
+      const nextSteps = buildTimelineSteps({
+        todayStr,
+        historicalDate,
+        spanDays,
+        granularity: nextGran,
+        quickRange,
+      }).steps;
+      const nextMax = Math.max(0, nextSteps.length - 1);
+      setGranularity(nextGran);
+      setPlaying(false);
+      setScrubIndex(Math.round((clampedScrubIndex / prevMax) * nextMax));
+      if (nextGran === "subdaily" && !climate) {
+        setSpreadOn(true);
+      }
+    },
+    [todayStr, historicalDate, spanDays, quickRange, timelineModel.steps.length, clampedScrubIndex, climate],
+  );
+
+  const handleSelectHistoricalDate = useCallback(
+    (dateStr: string) => {
+      const clamped = dateStr < "2000-11-01" ? "2000-11-01" : dateStr > todayStr ? todayStr : dateStr;
+      if (clamped >= todayStr) {
+        const nextSteps = buildTimelineSteps({
+          todayStr,
+          historicalDate: null,
+          spanDays: 1,
+          granularity,
+          quickRange: "today",
+        }).steps;
+        setHistoricalDate(null);
+        setQuickRange("today");
+        setSpanDays(1);
+        setPlaying(false);
+        setScrubIndex(Math.max(0, nextSteps.length - 1));
+        return;
+      }
+      setHistoricalDate(clamped);
+      setQuickRange(null);
+      setPlaying(false);
+      setScrubIndex(0);
+    },
+    [todayStr, granularity],
+  );
+
+  const handleChangeSpanDays = useCallback(
+    (nextSpan: SpanDays) => {
+      const nextQuick: QuickRange | null = historicalDate
+        ? null
+        : nextSpan === 1
+          ? "today"
+          : nextSpan === 3
+            ? "3d"
+            : nextSpan === 7
+              ? "7d"
+              : null;
+      const nextSteps = buildTimelineSteps({
+        todayStr,
+        historicalDate,
+        spanDays: nextSpan,
+        granularity,
+        quickRange: nextQuick,
+      }).steps;
+      setSpanDays(nextSpan);
+      setQuickRange(nextQuick);
+      setPlaying(false);
+      setScrubIndex(historicalDate ? 0 : Math.max(0, nextSteps.length - 1));
+    },
+    [todayStr, historicalDate, granularity],
+  );
+
+  const handleBackToLive = useCallback(() => {
+    const nextSteps = buildTimelineSteps({
+      todayStr,
+      historicalDate: null,
+      spanDays: 1,
+      granularity,
+      quickRange: "today",
+    }).steps;
+    setHistoricalDate(null);
+    setQuickRange("today");
+    setSpanDays(1);
+    setPlaying(false);
+    setScrubIndex(Math.max(0, nextSteps.length - 1));
+  }, [todayStr, granularity]);
+
+  // Individual detections passing the filters (live FIRMS pixels, historical archive, or the sample set).
   // Inside the chosen area's real border (e.g. Valencia City, all of Bukidnon); if it has none, the fires within
   // NEARBY_KM of the border instead, marked as such, so spread/heatspots still show what threatens the area.
   const { fires: filteredFires, nearby: firesNearby } = useMemo(() => {
@@ -324,8 +489,20 @@ export function EmberDashboard() {
     const matchesFilter = (hotspot: Hotspot) => {
       if (confidence !== "all" && hotspot.confidence !== confidence) return false;
       const sensors = hotspot.sources ?? [hotspot.source];
-      if (!sensors.some((s) => (s === "VIIRS" ? showViirs : showModis))) return false;
-      if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
+      if (!sensors.some((s) => (s === "VIIRS" ? effectiveShowViirs : showModis))) return false;
+      if (
+        !hotspotMatchesStep({
+          hotspot,
+          step: activeStep,
+          granularity,
+          isHistorical: isHistoricalMode,
+          isSingleDayWindow: spanDays === 1,
+          quickRange,
+          spanDays,
+        })
+      ) {
+        return false;
+      }
       if (
         query &&
         !`${hotspot.name} ${hotspot.settlement} ${hotspot.municipality}`
@@ -337,19 +514,48 @@ export function EmberDashboard() {
     };
 
     // Never pass sample fires off as real ones: while live (loading or failed) show none.
-    const source = isLiveFeedActive && firmsQuery.data ? firmsQuery.data.data : live || place ? NO_HOTSPOTS : HOTSPOTS;
+    const source =
+      isLiveFeedActive && firmsQuery.data
+        ? firmsQuery.data.data
+        : live || place || isHistoricalMode
+          ? NO_HOTSPOTS
+          : HOTSPOTS;
     const fires = source.filter(matchesFilter);
     if (!boundary) return { fires, nearby: false };
     return splitByBorder(fires, boundary, booleanPointInPolygon, pointToPolygonDistance);
-  }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data, place, live, boundary]);
+  }, [
+    confidence,
+    effectiveShowViirs,
+    showModis,
+    activeStep,
+    granularity,
+    isHistoricalMode,
+    spanDays,
+    quickRange,
+    search,
+    isLiveFeedActive,
+    firmsQuery.data,
+    place,
+    live,
+    boundary,
+  ]);
   const areaName = boundaryName ?? place?.name ?? "this area";
 
+  const harmonizedClusters: ClusteredHotspot[] = useMemo(
+    () => clusterHotspots(filteredFires),
+    [filteredFires],
+  );
+  const unharmonizedList: ClusteredHotspot[] = useMemo(
+    () => unharmonizedHotspots(filteredFires),
+    [filteredFires],
+  );
+  const harmonizationStats = useMemo(
+    () => computeHarmonizationStats(filteredFires, harmonizedClusters),
+    [filteredFires, harmonizedClusters],
+  );
   const visibleHotspots: ClusteredHotspot[] = useMemo(
-    () =>
-      isLiveFeedActive
-        ? clusterHotspots(filteredFires)
-        : filteredFires.map((h) => ({ ...h, highConfidenceCount: h.confidence === "high" ? 1 : 0 })),
-    [filteredFires, isLiveFeedActive],
+    () => (harmonized ? harmonizedClusters : unharmonizedList),
+    [harmonized, harmonizedClusters, unharmonizedList],
   );
   // Heatspots: every detection (not the clusters), weighted by its fire radiative power when known.
   const heatPoints = useMemo(
@@ -443,19 +649,19 @@ export function EmberDashboard() {
       { padding: 110, maxZoom: 15, duration: 1800 },
     );
   }, [spreadOn, climate, fireWindQuery.data, selectedHotspot?.lat, selectedHotspot?.lng]);
-  const activeCount = isLiveFeedActive
-    ? visibleHotspots.reduce((sum, h) => sum + h.count, 0)
-    : visibleHotspots.length;
-  const highCount = isLiveFeedActive
-    ? visibleHotspots.reduce((sum, h) => sum + h.highConfidenceCount, 0)
-    : visibleHotspots.filter((h) => h.confidence === "high").length;
+  const activeCount = harmonized
+    ? harmonizationStats.harmonizedClusterCount
+    : harmonizationStats.rawDetectionCount;
+  const highCount = harmonized
+    ? harmonizedClusters.filter((h) => h.confidence === "high" || h.isMultiSensor).length
+    : unharmonizedList.filter((h) => h.confidence === "high").length;
   const closest = visibleHotspots.reduce(
     (min, h) => Math.min(min, h.proximityKm),
     visibleHotspots[0]?.proximityKm ?? 0,
   );
 
   const liveStatus: EmberLiveStatus = useMemo(() => {
-    if (!live) return { mode: "sample", state: "idle" };
+    if (!live && !isHistoricalMode) return { mode: "sample", state: "idle" };
     if (firmsQuery.isFetching) return { mode: "live", state: "loading" };
     if (firmsQuery.isError) {
       return {
@@ -474,7 +680,7 @@ export function EmberDashboard() {
       lastSync: formattedTime,
       region: firmsQuery.data?.region,
     };
-  }, [live, firmsQuery.isFetching, firmsQuery.isError, firmsQuery.error, firmsQuery.data]);
+  }, [live, isHistoricalMode, firmsQuery.isFetching, firmsQuery.isError, firmsQuery.error, firmsQuery.data]);
 
   return (
     <EmberShell active="overview" title="Overview" liveStatus={liveStatus}>
@@ -508,9 +714,14 @@ export function EmberDashboard() {
           <div className="ember-stat-number">{activeCount}</div>
           <div className="ember-stat-foot">
             <span className="ember-change ember-up">
-              <ArrowUpRight size={13} /> 12%
+              <ArrowUpRight size={13} />{" "}
+              {harmonized ? `-${harmonizationStats.reductionPercent}%` : `${harmonizationStats.rawPixelCount} px`}
             </span>
-            <span>vs. previous 24h</span>
+            <span>
+              {harmonized
+                ? `fused from ${harmonizationStats.rawDetectionCount} raw detections`
+                : `unharmonized (${harmonizationStats.harmonizedClusterCount} when harmonized)`}
+            </span>
           </div>
         </article>
         <article className="ember-stat">
@@ -523,7 +734,9 @@ export function EmberDashboard() {
           <div className="ember-stat-number">{highCount}</div>
           <div className="ember-stat-foot">
             <span className="ember-change ember-neutral">MODIS + VIIRS</span>
-            <span>confirmed by both</span>
+            <span>
+              {harmonizationStats.dualSensorConfirmedCount} dual-sensor confirmed
+            </span>
           </div>
         </article>
         <article className="ember-stat">
@@ -659,9 +872,14 @@ export function EmberDashboard() {
             <div className="ember-window-selector" aria-label="Sensor layers">
               <button
                 type="button"
-                aria-pressed={showViirs}
-                className={showViirs ? "selected" : ""}
-                onClick={() => setShowViirs(!showViirs)}
+                disabled={isModisEraOnly}
+                aria-pressed={effectiveShowViirs}
+                className={effectiveShowViirs ? "selected" : ""}
+                title={isModisEraOnly ? "VIIRS launched in 2012" : "Toggle VIIRS 375m layer"}
+                style={isModisEraOnly ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                onClick={() => {
+                  if (!isModisEraOnly) setShowViirs(!showViirs);
+                }}
               >
                 VIIRS
               </button>
@@ -687,6 +905,59 @@ export function EmberDashboard() {
             </div>
           </div>
         </div>
+        {view === "fires" && (
+          <div
+            className="ember-harmonize-bar"
+            role="region"
+            aria-label="Harmonized vs Unharmonized comparison"
+          >
+            <div className="ember-harmonize-bar-info">
+              <div className="ember-harmonize-bar-title">
+                <span>MODIS + VIIRS HARMONIZATION</span>
+                <span className="ember-harmonize-delta">
+                  {harmonizationStats.mergedDuplicateCount > 0
+                    ? `-${harmonizationStats.reductionPercent}% duplicates merged`
+                    : "Sensor-fused"}
+                </span>
+              </div>
+              <p>
+                Compare cross-sensor fused fire events against raw unmerged MODIS (1 km) &amp; VIIRS (375 m) detections.
+              </p>
+            </div>
+            <div className="ember-harmonize-bar-actions" role="radiogroup" aria-label="Harmonization mode">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={harmonized}
+                className={`ember-harmonize-card ${harmonized ? "active" : ""}`}
+                title="Harmonized: deduplicates overlapping MODIS (1km) + VIIRS (375m) passes into unified fire events"
+                onClick={() => setHarmonized(true)}
+              >
+                <small>HARMONIZED (FUSED)</small>
+                <div className="ember-harmonize-card-metric">
+                  <strong>{harmonizationStats.harmonizedClusterCount}</strong>
+                  <span>{harmonizationStats.dualSensorConfirmedCount} dual-sensor · ≥96% conf</span>
+                </div>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={!harmonized}
+                className={`ember-harmonize-card ${!harmonized ? "active" : ""}`}
+                title="Unharmonized: shows raw individual MODIS and VIIRS satellite pixel detections before fusion"
+                onClick={() => setHarmonized(false)}
+              >
+                <small>UNHARMONIZED (RAW)</small>
+                <div className="ember-harmonize-card-metric">
+                  <strong>{harmonizationStats.rawDetectionCount}</strong>
+                  <span>
+                    {harmonizationStats.viirsRawCount} VIIRS · {harmonizationStats.modisRawCount} MODIS
+                  </span>
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
         <div className="ember-map-layout">
           <div
             className="ember-map-canvas"
@@ -703,8 +974,10 @@ export function EmberDashboard() {
               dark={dark}
               onReady={handleMapReady}
               layers={layers}
-              showViirs={showViirs}
+              showViirs={effectiveShowViirs}
               showModis={showModis}
+              activeDate={activeScrubDate}
+              isHistoricalDate={isHistoricalMode}
               onBoundsChange={(b) => setBbox((prev) => (keepBox(prev, b) ? prev : b))} // zooming in keeps the loaded fires
               onViewChange={setViewBbox}
               projection={mapView}
@@ -715,6 +988,9 @@ export function EmberDashboard() {
               wind={!climate && windOn ? (windQuery.data ?? null) : null}
               spread={!climate && spreadOn ? spread : null}
               spreadWinds={!climate && spreadOn ? (fireWindQuery.data ?? null) : null}
+              spreadPreviewHour={
+                !climate && spreadOn && granularity === "subdaily" ? activeStep.spreadHours : null
+              }
               heatPoints={!climate && heatOn ? heatPoints : null}
               onMapClick={
                 climate
@@ -1044,10 +1320,14 @@ export function EmberDashboard() {
             <div className="ember-panel-header">
               <div>
                 <div className="ember-panel-title">
-                  Priority clusters{" "}
+                  {harmonized ? "Priority clusters" : "Raw detections"}{" "}
                   <span>{visibleHotspots.length.toString().padStart(2, "0")}</span>
                 </div>
-                <p>Ranked by proximity &amp; confidence</p>
+                <p>
+                  {harmonized
+                    ? "Fused MODIS (1km) + VIIRS (375m) fire events"
+                    : "Unharmonized individual satellite pixels"}
+                </p>
               </div>
               <Button
                 variant="ghost"
@@ -1092,7 +1372,9 @@ export function EmberDashboard() {
                       <span className="ember-incident-meta">
                         {hotspot.acqTime}
                         <span>·</span>
-                        {hotspot.count} detections
+                        {(hotspot.sources ?? [hotspot.source]).join(" + ")}
+                        <span>·</span>
+                        {hotspot.count} {harmonized ? "detections" : "px"}
                       </span>
                     </span>
                     <span className="ember-incident-distance">
@@ -1146,43 +1428,39 @@ export function EmberDashboard() {
             )}
           </aside>
         </div>
-        <div className="ember-timeline">
-          <div className="ember-timeline-label">
-            <span>
-              <span className="ember-timeline-live" /> 7-DAY TIMELINE
-            </span>
-            <span className="ember-timeline-date">
-              {dayCursor === 0 ? "Today" : `${Math.abs(dayCursor)}d ago`}
-            </span>
-          </div>
-          <div
-            className="ember-timeline-chart"
-            style={{ display: "flex", alignItems: "center", gap: "12px" }}
-          >
-            <span className="ember-time-mark">-6d</span>
-            <input
-              type="range"
-              min={-6}
-              max={0}
-              step={1}
-              value={dayCursor}
-              onChange={(event) => setDayCursor(Number(event.target.value))}
-              aria-label="Detection timeline day"
-              style={{ flex: 1, accentColor: "var(--primary)" }}
-            />
-            <span className="ember-time-mark">Now</span>
-          </div>
-          <Button
-            variant="outline"
-            size="icon"
-            className="ember-play-button"
-            aria-label={playing ? "Pause timeline" : "Play timeline"}
-            onClick={() => setPlaying(!playing)}
-          >
-            {playing ? <Pause size={14} /> : <Play size={14} />}
-          </Button>
-        </div>
+        <HistoricalFireNavigator
+          todayStr={todayStr}
+          quickRange={quickRange}
+          granularity={granularity}
+          historicalDate={historicalDate}
+          spanDays={spanDays}
+          steps={timelineModel.steps}
+          scrubIndex={clampedScrubIndex}
+          startLabel={timelineModel.startLabel}
+          endLabel={timelineModel.endLabel}
+          isHistorical={isHistoricalMode}
+          isModisEraOnly={isModisEraOnly}
+          playing={playing}
+          spreadOn={spreadOn}
+          loadingArchive={isHistoricalMode && firmsQuery.isFetching}
+          onSelectQuickRange={handleSelectQuickRange}
+          onChangeGranularity={handleChangeGranularity}
+          onSelectHistoricalDate={handleSelectHistoricalDate}
+          onChangeSpanDays={handleChangeSpanDays}
+          onBackToLive={handleBackToLive}
+          onScrubChange={(idx) => {
+            setPlaying(false);
+            setScrubIndex(idx);
+          }}
+          onTogglePlay={() => {
+            if (!playing && clampedScrubIndex >= timelineModel.steps.length - 1) {
+              setScrubIndex(0);
+            }
+            setPlaying(!playing);
+          }}
+        />
         <SmartActionGuide place={place ?? DEFAULT_PLACE} onLocate={handleLocate} />
+
       </section>
 
       <section className="ember-bottom-strip">
@@ -1191,12 +1469,18 @@ export function EmberDashboard() {
             <Flame size={16} />
           </span>
           <span>
-            <b>{live ? "Live NASA FIRMS detections" : "Bukidnon detections"}</b>
+            <b>
+              {isHistoricalMode
+                ? `Historical archive · ${formatShortDate(activeScrubDate)}`
+                : live
+                  ? "Live NASA FIRMS detections"
+                  : "Bukidnon detections"}
+            </b>
             <small>
-              {live
+              {live || isHistoricalMode
                 ? firmsQuery.isError
                   ? "Live feed failed. No detections shown; try again shortly"
-                  : `${activeCount} live detections · ${place ? (boundary ? (firesNearby ? `within ${NEARBY_KM} km of ${areaName} (none inside)` : `inside ${areaName}`) : `~55 km around ${place.name}`) : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
+                  : `${activeCount} ${isHistoricalMode ? "archive" : "live"} detections · ${place ? (boundary ? (firesNearby ? `within ${NEARBY_KM} km of ${areaName} (none inside)` : `inside ${areaName}`) : `~55 km around ${place.name}`) : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
                 : `${visibleHotspots.length} clusters · closest settlement ${closest.toFixed(1)} km`}
             </small>
           </span>

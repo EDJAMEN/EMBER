@@ -77,8 +77,9 @@ export async function GET(request: NextRequest) {
   const srs = getParam(searchParams, "SRS") || "EPSG:3857";
   const format = getParam(searchParams, "FORMAT") || "image/png";
   const transparent = getParam(searchParams, "TRANSPARENT") || "true";
+  const time = getParam(searchParams, "TIME");
 
-  const cacheKey = `${layers}|${srs}|${width}x${height}|${bbox}`;
+  const cacheKey = `${layers}|${srs}|${width}x${height}|${time ?? "latest"}|${bbox}`;
   const now = Date.now();
   const cached = tileCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
@@ -106,6 +107,9 @@ export async function GET(request: NextRequest) {
     HEIGHT: height,
     BBOX: bbox,
   });
+  if (time && /^\d{4}-\d{2}-\d{2}$/.test(time.trim())) {
+    upstreamParams.set("TIME", time.trim());
+  }
 
   const upstreamUrl = `https://firms.modaps.eosdis.nasa.gov/mapserver/wms/fires/${encodeURIComponent(key)}/?${upstreamParams.toString()}`;
 
