@@ -1,7 +1,7 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { bbox as turfBbox, booleanPointInPolygon, circle } from "@turf/turf";
 import type { MultiPolygon, Polygon } from "geojson";
 import { type Detection, chunks, parseFirmsCsv, solarOffset, staticSources, tallyDaily } from "@/lib/fire-history";
@@ -20,7 +20,8 @@ const CACHE_DIR = join(tmpdir(), "ember-firms-cache");
 const NO_BORDER_RADIUS_KM = 5;
 
 type Status =
-  | { status: "loading"; progress: number; message: string }
+  // `partial`: what's counted so far (null = day not fetched yet), so the calendar can show while the rest loads.
+  | { status: "loading"; progress: number; message: string; partial?: HistoryPayload }
   | { status: "error"; message: string }
   | ({ status: "ready" } & HistoryPayload);
 
@@ -28,7 +29,7 @@ export interface HistoryPayload {
   area: { name: string; kind: string | null; approximate: boolean; country: string | null };
   firstDate: string; // local date of counts[0]
   lastDate: string; // last complete local day
-  counts: number[]; // one per local day, firstDate..lastDate
+  counts: (number | null)[]; // one per local day, firstDate..lastDate; null only while still loading
   source: string;
   removed: { notVegetation: number; lowConfidence: number };
   updated: string;
@@ -169,10 +170,34 @@ async function run(jobKey: string, origin: string, p: URLSearchParams) {
     const [w, s, e, n] = turfBbox(area.geometry);
     const box = [Math.floor(w * 100) / 100, Math.floor(s * 100) / 100, Math.ceil(e * 100) / 100, Math.ceil(n * 100) / 100].join(",");
 
-    // Plan: country files for past years when they exist; otherwise 5-day area windows.
+    const geom = area.geometry as Polygon | MultiPolygon;
+    const inside = (x: number, y: number) => x >= w && x <= e && y >= s && y <= n && booleanPointInPolygon([x, y], geom);
     const dets: Detection[] = [];
-    const areaPlan: { source: string; start: string; days: number; final: boolean }[] = [];
-    const planRange = (from: string, to: string) => {
+    const loaded = new Set<string>(); // UTC dates fetched so far
+    const markLoaded = (from: string, to: string) => {
+      for (let d = from; d <= to; d = nextDay(d)) loaded.add(d);
+    };
+    // A local day is complete once every UTC date it overlaps is loaded.
+    const known = (d: string) => loaded.has(d) && (offset > 0 ? loaded.has(addDaysIso(d, -1)) : offset < 0 ? loaded.has(nextDay(d)) : true);
+    const payload = (): HistoryPayload => {
+      const tally = tallyDaily(dets, inside, offset, staticSources(dets));
+      const counts: (number | null)[] = [];
+      for (let d = firstDate; d <= lastDate; d = nextDay(d)) counts.push(known(d) ? (tally.counts.get(d) ?? 0) : null);
+      return {
+        area: { name: area.name, kind: area.kind, approximate: area.approximate, country: area.country },
+        firstDate,
+        lastDate,
+        counts,
+        source: "NASA FIRMS · VIIRS NOAA-20 (375 m)",
+        removed: tally.removed,
+        updated: new Date().toISOString(),
+      };
+    };
+
+    // Work units, newest first: the calendar opens on the latest month, so that fills in first.
+    type Win = { source: string; start: string; days: number; final: boolean };
+    const windows = (from: string, to: string): Win[] => {
+      const out: Win[] = [];
       for (const [src, a, b] of [
         [SENSOR.sp, from, to < spMax ? to : spMax],
         [SENSOR.nrt, from > spMax ? from : nextDay(spMax), to],
@@ -180,68 +205,70 @@ async function run(jobKey: string, origin: string, p: URLSearchParams) {
         if (a > b) continue;
         for (const c of chunks(a, b)) {
           const end = addDaysIso(c.start, c.days - 1);
-          areaPlan.push({ source: src, start: c.start, days: c.days, final: src === SENSOR.sp || end < addDaysIso(nrtMax, -3) });
+          out.push({ source: src, start: c.start, days: c.days, final: src === SENSOR.sp || end < addDaysIso(nrtMax, -3) });
         }
       }
+      return out.reverse();
     };
-    // Local day 1 of the first year starts the previous UTC evening when the area is east of Greenwich.
-    if (offset > 0) planRange(addDaysIso(firstDate, -1), addDaysIso(firstDate, -1));
-
-    const years = Array.from({ length: thisYear - firstYear + 1 }, (_, i) => firstYear + i);
-    const pastYears = years.filter((y) => y < thisYear);
+    const years = Array.from({ length: thisYear - firstYear + 1 }, (_, i) => thisYear - i); // newest first
     let done = 0;
-    let shown = 2;
-    const total = () => pastYears.length + areaPlan.length + 1;
-    // The plan grows as years turn out to need area requests; never let the bar move backwards.
-    const tick = (message: string) => {
-      shown = Math.max(shown, Math.min(97, Math.round((++done / total()) * 100)));
-      set({ status: "loading", progress: shown, message });
+    const total = years.length + 1;
+    const progress = (message: string, withData: boolean) =>
+      set({ status: "loading", progress: Math.min(97, Math.round((done / total) * 100)), message, ...(withData ? { partial: payload() } : {}) });
+
+    // Area windows, 8 at a time (MAP_KEY budget checked every 40), adding partial results as they arrive.
+    const fetchWindows = async (wins: Win[], label: string) => {
+      for (let i = 0; i < wins.length; i += 8) {
+        if (i % 40 === 0) await respectBudget(key, (msg) => progress(msg, false));
+        const group = wins.slice(i, i + 8);
+        const texts = await Promise.all(group.map((c) => areaChunk(key, c.source, box, c.start, c.days, c.final)));
+        texts.forEach((t, k) => {
+          dets.push(...parseFirmsCsv(t));
+          markLoaded(group[k]!.start, addDaysIso(group[k]!.start, group[k]!.days - 1));
+        });
+        progress(label, true);
+      }
     };
 
-    for (const y of pastYears) {
-      const text = area.country ? await countryYear(area.country, y) : null;
+    for (const y of years) {
+      // The current year (+ the next UTC day, for areas west of Greenwich) never has a country file yet.
+      const text = y < thisYear && area.country ? await countryYear(area.country, y) : null;
       if (text) {
         dets.push(...parseFirmsCsv(text));
-        tick(`Reading NASA's ${y} records for ${area.country}…`);
+        markLoaded(`${y}-01-01`, `${y}-12-31`);
       } else {
-        planRange(`${y}-01-01`, `${y}-12-31`);
-        tick(`Planning ${y}…`);
+        await fetchWindows(windows(`${y}-01-01`, y === thisYear ? nextDay(lastDate) : `${y}-12-31`), `Getting ${y} satellite records for ${area.name}…`);
       }
+      done++;
+      progress(`Added ${y}. Getting earlier years…`, true);
     }
-    planRange(`${thisYear}-01-01`, nextDay(lastDate)); // + the next UTC day, for areas west of Greenwich
+    // Local day 1 of the first year starts the previous UTC evening when the area is east of Greenwich.
+    if (offset > 0) await fetchWindows(windows(addDaysIso(firstDate, -1), addDaysIso(firstDate, -1)), "Finishing…");
 
-    // Area windows, 4 at a time, pausing whenever the shared MAP_KEY budget runs low.
-    for (let i = 0; i < areaPlan.length; i += 20) {
-      await respectBudget(key, (msg) => set({ status: "loading", progress: shown, message: msg }));
-      const batch = areaPlan.slice(i, i + 20);
-      for (let j = 0; j < batch.length; j += 4) {
-        const texts = await Promise.all(batch.slice(j, j + 4).map((c) => areaChunk(key, c.source, box, c.start, c.days, c.final)));
-        for (const t of texts) {
-          dets.push(...parseFirmsCsv(t));
-          tick(`Getting satellite records for ${area.name}…`);
-        }
-      }
-    }
-
-    // Count inside the real border (bbox prefilter keeps country-wide files fast).
-    const geom = area.geometry as Polygon | MultiPolygon;
-    const inside = (x: number, y: number) => x >= w && x <= e && y >= s && y <= n && booleanPointInPolygon([x, y], geom);
-    const tally = tallyDaily(dets, inside, offset, staticSources(dets));
-    const counts: number[] = [];
-    for (let d = firstDate; d <= lastDate; d = nextDay(d)) counts.push(tally.counts.get(d) ?? 0);
-
-    set({
-      status: "ready",
-      area: { name: area.name, kind: area.kind, approximate: area.approximate, country: area.country },
-      firstDate,
-      lastDate,
-      counts,
-      source: "NASA FIRMS · VIIRS NOAA-20 (375 m)",
-      removed: tally.removed,
-      updated: new Date().toISOString(),
-    });
+    const final = payload();
+    set({ status: "ready", ...final });
+    void saveResult(jobKey, final);
   } catch (err) {
     set({ status: "error", message: (err as Error).message || "Something went wrong getting NASA records." });
+  }
+}
+
+// Finished results survive restarts (and are shared by every visitor of this server).
+const resultFile = (jobKey: string) => join(CACHE_DIR, `result_${safe(jobKey)}.json`);
+async function saveResult(jobKey: string, r: HistoryPayload) {
+  try {
+    await mkdir(CACHE_DIR, { recursive: true });
+    await writeFile(resultFile(jobKey), JSON.stringify(r), "utf8");
+  } catch {
+    /* read-only disk: memory cache still works */
+  }
+}
+async function loadResult(jobKey: string): Promise<{ r: HistoryPayload; age: number } | null> {
+  try {
+    const f = resultFile(jobKey);
+    return { r: JSON.parse(await readFile(f, "utf8")) as HistoryPayload, age: Date.now() - (await stat(f)).mtimeMs };
+  } catch {
+    return null;
   }
 }
 
@@ -261,16 +288,27 @@ export async function GET(request: Request) {
   if (osm && !/^[NWR]\d{1,12}$/.test(osm)) return NextResponse.json({ status: "error", message: "bad osm id" }, { status: 400 });
   const jobKey = osm ?? `${lat.toFixed(3)},${lng.toFixed(3)}`;
 
-  const job = jobs.get(jobKey);
+  let job = jobs.get(jobKey);
+  if (!job) {
+    // Saved on disk from an earlier visit: answer instantly (and refresh in the background if it's old).
+    const saved = await loadResult(jobKey);
+    if (saved) {
+      job = { state: { status: "ready", ...saved.r }, at: Date.now() - saved.age };
+      jobs.set(jobKey, job);
+    }
+  }
   if (job?.state.status === "ready") lastReady.set(jobKey, job.state);
   const stale = !job || job.state.status === "error" || (job.state.status === "ready" && Date.now() - job.at > READY_TTL);
   if (stale) {
     if (jobs.size > 200) jobs.delete(jobs.keys().next().value!);
     jobs.set(jobKey, { state: { status: "loading", progress: 0, message: "Starting…" }, at: Date.now() });
-    void run(jobKey, url.origin, p); // runs in the background; the page polls this endpoint
+    // Runs after the response is sent (kept alive on serverless hosts too); the page polls for progress.
+    after(() => run(jobKey, url.origin, p));
   }
   // While a 3-hourly refresh runs, keep serving the previous result instead of flipping back to "loading".
   const state = jobs.get(jobKey)!.state;
   const shown = state.status === "loading" && lastReady.has(jobKey) ? lastReady.get(jobKey)! : state;
-  return NextResponse.json(shown, { headers: { "Cache-Control": "no-store" } });
+  // Finished results can be cached by the host's CDN for everyone; progress must not be.
+  const cache = shown.status === "ready" ? "public, max-age=300, s-maxage=10800, stale-while-revalidate=86400" : "no-store";
+  return NextResponse.json(shown, { headers: { "Cache-Control": cache } });
 }

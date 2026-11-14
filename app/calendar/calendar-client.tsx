@@ -64,7 +64,7 @@ const ADVICE = [
 ];
 
 type HistoryState =
-  | { status: "loading"; progress: number; message: string }
+  | { status: "loading"; progress: number; message: string; partial?: HistoryPayload }
   | { status: "error"; message: string }
   | ({ status: "ready" } & HistoryPayload);
 
@@ -74,6 +74,29 @@ const validPlace = (p: unknown): p is GuidePlace =>
   Number.isFinite((p as GuidePlace).lat) &&
   Number.isFinite((p as GuidePlace).lng) &&
   ((p as GuidePlace).osm === undefined || /^[NWR]\d{1,12}$/.test((p as GuidePlace).osm!));
+
+// Last finished result per place, kept in this browser so a place opens instantly and updates in the background.
+const CACHE_PREFIX = "ember.calendar.cache.";
+const CACHE_INDEX = "ember.calendar.cache.index";
+function readCached(key: string): HistoryState | undefined {
+  try {
+    const v = JSON.parse(localStorage.getItem(CACHE_PREFIX + key) ?? "null") as HistoryState | null;
+    return v?.status === "ready" ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function writeCached(key: string, v: HistoryState) {
+  try {
+    const index = (JSON.parse(localStorage.getItem(CACHE_INDEX) ?? "[]") as string[]).filter((k) => k !== key);
+    index.unshift(key);
+    for (const old of index.splice(8)) localStorage.removeItem(CACHE_PREFIX + old); // keep the last 8 places
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(v));
+    localStorage.setItem(CACHE_INDEX, JSON.stringify(index));
+  } catch {
+    /* storage full or blocked: just not cached */
+  }
+}
 
 async function fetchHistory(place: GuidePlace): Promise<HistoryState> {
   const qs = new URLSearchParams({ lat: String(place.lat), lng: String(place.lng), name: place.name });
@@ -132,10 +155,17 @@ export function CalendarPage() {
     queryFn: () => fetchHistory(place!),
     enabled: !!place,
     // The server builds the history in the background; ask again every few seconds until it's ready.
-    refetchInterval: (q) => (q.state.data?.status === "loading" ? 2500 : false),
+    refetchInterval: (q) => (q.state.data?.status === "loading" ? 1500 : false),
     staleTime: 10 * 60 * 1000,
+    placeholderData: () => (placeKey ? readCached(placeKey) : undefined),
   });
   const data = history.data;
+  const fromSaved = history.isPlaceholderData;
+  useEffect(() => {
+    if (data?.status === "ready" && !history.isPlaceholderData) writeCached(placeKey, data);
+  }, [data, placeKey, history.isPlaceholderData]);
+  // What to draw: the finished result, or what's counted so far while the rest loads.
+  const shown: HistoryPayload | null = data?.status === "ready" ? data : data?.status === "loading" ? (data.partial ?? null) : null;
 
   const locateMe = () => {
     if (!navigator.geolocation) return setLocating("This device can't share its location.");
@@ -229,7 +259,17 @@ export function CalendarPage() {
         )}
       </section>
 
-      {!place || !data || data.status === "loading" ? (
+      {(fromSaved || data?.status === "loading") && shown && (
+        <p role="status" aria-live="polite" className="no-print mt-3 flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
+          <RefreshCw size={16} className="shrink-0 animate-spin text-[#c2410c]" aria-hidden />
+          {fromSaved
+            ? "Showing the records saved on this device. Checking NASA for anything new…"
+            : `${data?.status === "loading" ? data.message : ""} Days still loading show a light shimmer.`}
+        </p>
+      )}
+      {shown ? (
+        <CalendarBody key={placeKey} h={shown} analyst={analyst} />
+      ) : !place || !data || data.status === "loading" ? (
         <LoadingPanel name={place?.name ?? "your place"} state={data?.status === "loading" ? data : null} failed={history.isError} onRetry={() => history.refetch()} />
       ) : data.status === "error" ? (
         <div role="alert" className="mt-4 rounded-md border border-[#a8231b]/50 bg-[#a8231b]/10 p-4 text-base">
@@ -239,9 +279,7 @@ export function CalendarPage() {
             <RefreshCw size={18} aria-hidden /> Try again
           </button>
         </div>
-      ) : (
-        <CalendarBody key={placeKey} h={data} analyst={analyst} />
-      )}
+      ) : null}
     </EmberShell>
   );
 }
@@ -276,15 +314,29 @@ type Range = { from: string; to: string };
 /** Everything the calendar derives from one place's history. */
 function useModel(h: HistoryPayload) {
   return useMemo(() => {
-    const days: DailyCount[] = h.counts.map((count, i) => ({ date: addDays(h.firstDate, i), count }));
+    const days: DailyCount[] = [];
+    const pending = new Set<string>(); // days not fetched yet (partial result)
+    const pendingMonths = new Set<string>(); // "year-month" with any such day
+    h.counts.forEach((count, i) => {
+      const date = addDays(h.firstDate, i);
+      if (count === null) {
+        pending.add(date);
+        pendingMonths.add(`${Number(date.slice(0, 4))}-${Number(date.slice(5, 7)) - 1}`);
+      } else days.push({ date, count });
+    });
     const index = new Map(days.map((d) => [d.date, d.count]));
     const monthly = monthlyTotals(days);
+    for (let y = Number(h.firstDate.slice(0, 4)); y <= Number(h.lastDate.slice(0, 4)); y++)
+      if (!monthly.has(y)) monthly.set(y, Array<number | null>(12).fill(null));
     const years = [...monthly.keys()].sort((a, b) => a - b);
     // Scale: a high day = the 95th percentile of days that had any fire, so busy places and quiet places both read well.
     const nonzero = days.map((d) => d.count).filter((c) => c > 0).sort((a, b) => a - b);
     const dayScale = Math.max(1, nonzero[Math.floor(nonzero.length * 0.95)] ?? 1);
     const monthScale = Math.max(1, ...[...monthly.values()].flat().map((v) => v ?? 0));
     return {
+      complete: pending.size === 0,
+      pending,
+      pendingMonths,
       days,
       index,
       monthly,
@@ -404,7 +456,18 @@ function CalendarBody({ h, analyst }: { h: HistoryPayload; analyst: boolean }) {
         </p>
       )}
 
-      {/* Plain-English insight cards */}
+      {/* Plain-English insight cards (they compare years, so they wait for the full history) */}
+      {!M.complete ? (
+        <section className="mt-4 grid gap-3 sm:grid-cols-3" aria-label="Summary" aria-busy>
+          {["How this month compares", "Peak fire season", "Most active month"].map((t) => (
+            <article key={t} className="rounded-md border border-border bg-card p-4">
+              <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">{t}</p>
+              <div className="mt-3 h-6 w-2/3 animate-pulse rounded bg-muted" />
+              <p className="mt-2 text-sm text-muted-foreground">Counting past years…</p>
+            </article>
+          ))}
+        </section>
+      ) : (
       <section className="mt-4 grid gap-3 sm:grid-cols-3" aria-label="Summary">
         <article className="rounded-md border border-border bg-card p-4">
           <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
@@ -461,6 +524,7 @@ function CalendarBody({ h, analyst }: { h: HistoryPayload; analyst: boolean }) {
           )}
         </article>
       </section>
+      )}
 
       {/* The calendar */}
       <section ref={calendarRef} className="ember-map-section scroll-mt-4" aria-label="Calendar">
@@ -535,6 +599,14 @@ function CalendarBody({ h, analyst }: { h: HistoryPayload; analyst: boolean }) {
                 const d = iso(year, month, i + 1);
                 const count = M.index.get(d);
                 const has = count !== undefined;
+                if (M.pending.has(d)) {
+                  return (
+                    <div key={d} aria-label={`${longDate(d)}: loading`} className="flex min-h-14 animate-pulse flex-col justify-between rounded-md bg-muted p-1.5 sm:min-h-[72px] sm:p-2">
+                      <span className="text-base leading-none font-bold text-muted-foreground sm:text-lg">{i + 1}</span>
+                      <span className="text-[10px] text-muted-foreground sm:text-xs">Loading…</span>
+                    </div>
+                  );
+                }
                 const l = has ? level(count, M.dayScale) : 0;
                 const inRange = d >= range.from && d <= range.to;
                 const edge = d === range.from ? "Start" : d === range.to ? "End" : null;
@@ -671,6 +743,13 @@ function CalendarBody({ h, analyst }: { h: HistoryPayload; analyst: boolean }) {
                       {y}
                     </th>
                     {M.monthly.get(y)!.map((v, m) => {
+                      if (M.pendingMonths.has(`${y}-${m}`)) {
+                        return (
+                          <td key={m} className="p-0.5">
+                            <span aria-label={`${MONTH_NAMES[m]} ${y}: loading`} className="block h-9 w-11 animate-pulse rounded-[3px] bg-muted" />
+                          </td>
+                        );
+                      }
                       const selected = y === year && m === month;
                       const l = v === null ? 0 : level(v, M.monthScale);
                       const vsAvg = v === null ? "" : vsNormal(v, climatology(M.monthly, y).mean[m]!);
@@ -751,6 +830,12 @@ function countdown(M: Model): string {
 function describeRange(M: Model, { from, to }: Range, analyst: boolean) {
   const sameYear = from.slice(0, 4) === to.slice(0, 4);
   const when = from === to ? `On ${longDate(from)}` : `From ${longDate(from, !sameYear)} to ${longDate(to)}`;
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    if (M.pending.has(d)) {
+      const lines = ["Still getting the satellite records for these days. This answer will appear in a moment."];
+      return { when, headline: "Loading…", level: 0, lines, speech: `${when}. ${lines[0]}` };
+    }
+  }
   const stats = rangeStats(M.index, from, to);
   if (!stats.days) {
     const lines = ["We have no records for these dates yet."];
@@ -781,7 +866,6 @@ function describeRange(M: Model, { from, to }: Range, analyst: boolean) {
     else if (avg === 0) lines.push("That is more than usual: past years had no fires on these dates.");
     else if (avg < SMALL) lines.push(`Past years usually had ${usualFires(avg)} on these dates${Math.abs(stats.total - avg) <= 2 ? ", so this is normal" : ""}.`);
     else {
-      const pct = Math.round(((stats.total - avg) / avg) * 100);
       const typical = `the same dates in past years (usually ${usualFires(avg)})`;
       lines.push(`That is ${compare(stats.total, avg)} ${typical}.`);
     }
