@@ -18,6 +18,10 @@ export type EmberMapIncident = {
   lng: number;
   sources?: string[]; // sensors that saw a fused cluster, e.g. ["MODIS", "VIIRS"]
   footprint?: Polygon | Point; // fused cluster area from lib/harmonization
+  proximityKm?: number;
+  settlementLat?: number;
+  settlementLng?: number;
+  settlementName?: string;
 };
 
 export type EmberMapInstance = maplibregl.Map;
@@ -31,6 +35,9 @@ export interface EmberMapLayers {
 
 const BLUE_MARBLE_URL =
   "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_NextGeneration/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg";
+
+const HIGHRES_SATELLITE_URL =
+  "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
 const NATURAL_EARTH_COUNTRIES_URL =
   "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson";
@@ -80,7 +87,15 @@ function addEmberLayers(map: maplibregl.Map, dark: boolean) {
     source: "ember-boundary",
     paint: {
       "fill-color": "#e2481f",
-      "fill-opacity": ["case", hover, 0.28, ["==", ["get", "buk"], true], 0.14, 0.04],
+      "fill-opacity": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        6.5,
+        ["case", hover, 0.28, ["==", ["get", "buk"], true], 0.14, 0.04],
+        7,
+        0,
+      ],
     },
   });
   map.addLayer({
@@ -245,12 +260,14 @@ export function EmberMap({
   const boundsChangeRef = useRef(onBoundsChange);
   boundsChangeRef.current = onBoundsChange;
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  const distLabelRef = useRef<maplibregl.Marker | null>(null);
   const pinRef = useRef<{ marker: maplibregl.Marker; label: HTMLSpanElement } | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const prevSelectedRef = useRef(selected);
   const [boundary, setBoundary] = useState<FeatureCollection | null>(null);
   // Bumped on every style (re)load so data effects re-push into the fresh sources.
   const [styleVersion, setStyleVersion] = useState(0);
+  const [isZoomedIn, setIsZoomedIn] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -260,6 +277,7 @@ export function EmberMap({
       style: styleUrl(darkRef.current),
       center: [0, 15],
       zoom: 1.2,
+      maxZoom: 16.5,
       attributionControl: { compact: true },
       maxPitch: 60,
     });
@@ -309,6 +327,7 @@ export function EmberMap({
 
     let boundsTimer: ReturnType<typeof setTimeout> | null = null;
     const emitBounds = () => {
+      setIsZoomedIn(map.getZoom() >= 4.5);
       if (boundsTimer) clearTimeout(boundsTimer);
       boundsTimer = setTimeout(() => {
         if (map.getZoom() < 3.5) return;
@@ -346,7 +365,7 @@ export function EmberMap({
 
   useEffect(() => {
     let cancelled = false;
-    fetch("https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_PHL_2.json")
+    fetch("/api/boundaries")
       .then((res) => {
         if (!res.ok) throw new Error("boundary fetch failed");
         return res.json() as Promise<FeatureCollection>;
@@ -410,18 +429,34 @@ export function EmberMap({
     if (!map || styleVersion === 0) return;
 
     const styleLayers = map.getStyle()?.layers ?? [];
+    const hideHorizonSymbols = layers.blueMarble && projection === "globe" && map.getZoom() < 4.5;
     for (const lyr of styleLayers) {
       if (
         lyr.id.startsWith("ember-") ||
         lyr.id.startsWith("nasa-") ||
-        lyr.id.startsWith("natural-earth-")
+        lyr.id.startsWith("natural-earth-") ||
+        lyr.id.startsWith("esri-")
       ) {
         continue;
       }
+      if (!map.getLayer(lyr.id)) continue;
       if (lyr.type === "background" || lyr.type === "fill") {
         map.setLayoutProperty(lyr.id, "visibility", layers.blueMarble ? "none" : "visible");
+      } else if (lyr.type === "symbol") {
+        map.setLayoutProperty(lyr.id, "visibility", hideHorizonSymbols ? "none" : "visible");
       }
     }
+
+    const firstBaseLabel = styleLayers.find((l) => l.type === "symbol" && !l.id.startsWith("ember-"))?.id;
+    const beforeOverlayId = [
+      firstBaseLabel,
+      "ember-buildings-3d",
+      "ember-boundary-fill",
+      "ember-areas-fill",
+      "ember-footprints-fill",
+      "ember-sensor-footprints-fill",
+      "ember-proximity-line-layer",
+    ].find((id): id is string => !!id && !!map.getLayer(id));
 
     if (!map.getSource("nasa-gibs-bluemarble")) {
       map.addSource("nasa-gibs-bluemarble", {
@@ -430,12 +465,8 @@ export function EmberMap({
         tileSize: 256,
         maxzoom: 8,
       });
-      // Under the basemap's place/road labels (satellite + names, like a hybrid map) and therefore under the
-      // 3D buildings and EMBER's data layers; fall back to those if the style has no labels.
-      const firstBaseLabel = styleLayers.find((l) => l.type === "symbol" && !l.id.startsWith("ember-"))?.id;
-      const beforeBoundary = [firstBaseLabel, "ember-buildings-3d", "ember-boundary-fill"].find(
-        (id): id is string => !!id && !!map.getLayer(id),
-      );
+    }
+    if (!map.getLayer("nasa-gibs-bluemarble-layer")) {
       map.addLayer(
         {
           id: "nasa-gibs-bluemarble-layer",
@@ -443,11 +474,39 @@ export function EmberMap({
           source: "nasa-gibs-bluemarble",
           layout: { visibility: layers.blueMarble ? "visible" : "none" },
         },
-        beforeBoundary,
+        beforeOverlayId,
       );
-    } else if (map.getLayer("nasa-gibs-bluemarble-layer")) {
+    } else {
       map.setLayoutProperty(
         "nasa-gibs-bluemarble-layer",
+        "visibility",
+        layers.blueMarble ? "visible" : "none",
+      );
+    }
+
+    if (!map.getSource("esri-world-imagery")) {
+      map.addSource("esri-world-imagery", {
+        type: "raster",
+        tiles: [HIGHRES_SATELLITE_URL],
+        tileSize: 256,
+        maxzoom: 17,
+      });
+    }
+    if (!map.getLayer("esri-world-imagery-layer")) {
+      map.addLayer(
+        {
+          id: "esri-world-imagery-layer",
+          type: "raster",
+          source: "esri-world-imagery",
+          minzoom: 8,
+          maxzoom: 22,
+          layout: { visibility: layers.blueMarble ? "visible" : "none" },
+        },
+        beforeOverlayId,
+      );
+    } else {
+      map.setLayoutProperty(
+        "esri-world-imagery-layer",
         "visibility",
         layers.blueMarble ? "visible" : "none",
       );
@@ -499,7 +558,7 @@ export function EmberMap({
         source: "nasa-firms-wms",
       });
     }
-  }, [styleVersion, layers.blueMarble, layers.countryBorders, layers.firmsWms, showViirs, showModis]);
+  }, [styleVersion, layers.blueMarble, layers.countryBorders, layers.firmsWms, showViirs, showModis, isZoomedIn, projection]);
 
   // Fire clusters: glowing count markers (DOM, unaffected by style reloads).
   useEffect(() => {
@@ -526,7 +585,29 @@ export function EmberMap({
     const current = incidents[selected];
     const selectionChanged = prevSelectedRef.current !== selected;
     prevSelectedRef.current = selected;
-    if (current && selectionChanged) map.panTo([current.lng, current.lat]);
+    if (current && selectionChanged) {
+      if (current.settlementLat !== undefined && current.settlementLng !== undefined) {
+        map.fitBounds(
+          [
+            [Math.min(current.lng, current.settlementLng), Math.min(current.lat, current.settlementLat)],
+            [Math.max(current.lng, current.settlementLng), Math.max(current.lat, current.settlementLat)],
+          ],
+          {
+            padding: { top: 90, bottom: 110, left: 90, right: 90 },
+            maxZoom: 13.5,
+            pitch: 35,
+            duration: 1400,
+          },
+        );
+      } else {
+        map.flyTo({
+          center: [current.lng, current.lat],
+          zoom: 12.5,
+          pitch: 35,
+          duration: 1400,
+        });
+      }
+    }
   }, [incidents, selected, layers.clusteredHotspots]);
 
   // Picked place: fly there (slow descent from the globe) and drop a labelled pin.
@@ -564,7 +645,152 @@ export function EmberMap({
     if (map) setData(map, "ember-areas", areas ?? EMPTY);
   }, [areas, styleVersion]);
 
-  return <div ref={containerRef} className="ember-leaflet" aria-hidden="true" />;
+  // Sensor footprints (375m VIIRS / 1km MODIS) and dashed proximity line at zoom >= 8
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || styleVersion === 0) return;
+
+    const squareFootprint = (lat: number, lng: number, halfMeters: number): Polygon => {
+      const dLat = halfMeters / 111320;
+      const dLng = halfMeters / (111320 * Math.max(0.1, Math.cos((lat * Math.PI) / 180)));
+      return {
+        type: "Polygon",
+        coordinates: [
+          [
+            [lng - dLng, lat - dLat],
+            [lng + dLng, lat - dLat],
+            [lng + dLng, lat + dLat],
+            [lng - dLng, lat + dLat],
+            [lng - dLng, lat - dLat],
+          ],
+        ],
+      };
+    };
+
+    const footprintFeatures: Feature[] = incidents.flatMap((inc) => {
+      const sensors = inc.sources ?? ["VIIRS"];
+      return sensors.map((sensor) => ({
+        type: "Feature" as const,
+        geometry: squareFootprint(inc.lat, inc.lng, sensor === "MODIS" ? 500 : 187.5),
+        properties: {
+          color: sensor === "MODIS" ? "#e2481f" : "#e86a1f",
+          sensor,
+        },
+      }));
+    });
+
+    const active = incidents[selected];
+    const lineFeatures: Feature[] =
+      active && active.settlementLat !== undefined && active.settlementLng !== undefined
+        ? [
+            {
+              type: "Feature",
+              geometry: {
+                type: "LineString",
+                coordinates: [
+                  [active.lng, active.lat],
+                  [active.settlementLng, active.settlementLat],
+                ],
+              },
+              properties: {
+                label: `${(active.proximityKm ?? 0).toFixed(1)} km`,
+              },
+            },
+          ]
+        : [];
+
+    if (!map.getSource("ember-sensor-footprints")) {
+      map.addSource("ember-sensor-footprints", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: footprintFeatures },
+      });
+      map.addLayer({
+        id: "ember-sensor-footprints-fill",
+        type: "fill",
+        source: "ember-sensor-footprints",
+        minzoom: 8,
+        paint: { "fill-color": ["get", "color"], "fill-opacity": 0.22 },
+      });
+      map.addLayer({
+        id: "ember-sensor-footprints-line",
+        type: "line",
+        source: "ember-sensor-footprints",
+        minzoom: 8,
+        paint: { "line-color": ["get", "color"], "line-width": 1.5 },
+      });
+    } else {
+      setData(map, "ember-sensor-footprints", { type: "FeatureCollection", features: footprintFeatures });
+    }
+
+    if (!map.getSource("ember-proximity-line")) {
+      map.addSource("ember-proximity-line", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: lineFeatures },
+      });
+      map.addLayer({
+        id: "ember-proximity-line-layer",
+        type: "line",
+        source: "ember-proximity-line",
+        minzoom: 8,
+        paint: {
+          "line-color": "#fbbf24",
+          "line-width": 2,
+          "line-dasharray": [2, 2],
+        },
+      });
+    } else {
+      setData(map, "ember-proximity-line", { type: "FeatureCollection", features: lineFeatures });
+    }
+
+    distLabelRef.current?.remove();
+    distLabelRef.current = null;
+    if (
+      active &&
+      active.settlementLat !== undefined &&
+      active.settlementLng !== undefined &&
+      map.getZoom() >= 8
+    ) {
+      const midLng = (active.lng + active.settlementLng) / 2;
+      const midLat = (active.lat + active.settlementLat) / 2;
+      const pill = document.createElement("div");
+      pill.style.cssText =
+        "padding:2px 7px;border-radius:999px;background:rgba(17,24,39,0.88);color:#fef08a;border:1px solid rgba(251,191,36,0.55);font:600 10px var(--font-mono,monospace);pointer-events:none;white-space:nowrap";
+      pill.textContent = `${(active.proximityKm ?? 0).toFixed(1)} km${active.settlementName ? ` to ${active.settlementName}` : ""}`;
+      distLabelRef.current = new maplibregl.Marker({ element: pill, anchor: "center" })
+        .setLngLat([midLng, midLat])
+        .addTo(map);
+    }
+  }, [incidents, selected, styleVersion, isZoomedIn]);
+
+  return (
+    <>
+      <div ref={containerRef} className="ember-leaflet" aria-hidden="true" />
+      {isZoomedIn && (
+        <button
+          type="button"
+          onClick={() => mapRef.current?.flyTo({ center: [0, 15], zoom: 1.2, pitch: 0, duration: 1200 })}
+          style={{
+            position: "absolute",
+            bottom: 14,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 12,
+            padding: "5px 12px",
+            borderRadius: 999,
+            border: "1px solid var(--border)",
+            background: "var(--popover)",
+            color: "var(--popover-foreground)",
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: "pointer",
+            boxShadow: "0 4px 12px rgb(0 0 0 / 25%)",
+          }}
+        >
+          Reset to Globe
+        </button>
+      )}
+    </>
+  );
 }
 
 export default EmberMap;

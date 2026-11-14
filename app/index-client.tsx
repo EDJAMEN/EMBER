@@ -101,9 +101,36 @@ const BADGE_OF: Record<Confidence, string> = {
   low: "LOW",
 };
 
+const TOWN_COORDS: Record<string, { lat: number; lng: number }> = {
+  "Malaybalay City": { lat: 8.1575, lng: 125.1278 },
+  "Valencia City": { lat: 7.9043, lng: 125.092 },
+  Maramag: { lat: 7.7583, lng: 125.0065 },
+  "Manolo Fortich": { lat: 8.3677, lng: 124.8665 },
+  Quezon: { lat: 7.7306, lng: 125.104 },
+  Impasugong: { lat: 8.3011, lng: 125.0061 },
+  "Don Carlos": { lat: 7.7208, lng: 124.9989 },
+};
+
+function getManilaGreeting(): string {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Manila",
+      hour: "numeric",
+      hour12: false,
+    }).format(new Date()),
+  );
+  if (hour < 12) return "Good morning, team";
+  if (hour < 18) return "Good afternoon, team";
+  return "Good evening, team";
+}
+
 export function EmberDashboard() {
   const { dark } = useTheme();
   const mapRef = useRef<EmberMapInstance | null>(null);
+  const [greeting, setGreeting] = useState("Good morning, team");
+  useEffect(() => {
+    setGreeting(getManilaGreeting());
+  }, []);
   const handleMapReady = useCallback((map: EmberMapInstance) => {
     mapRef.current = map;
   }, []);
@@ -258,15 +285,22 @@ export function EmberDashboard() {
     () =>
       climate
         ? []
-        : visibleHotspots.map((h) => ({
-            name: h.name,
-            count: h.count,
-            severity: SEVERITY_OF[h.confidence],
-            lat: h.lat,
-            lng: h.lng,
-            sources: h.sources,
-            footprint: h.geoJsonPolygon,
-          })),
+        : visibleHotspots.map((h) => {
+            const town = TOWN_COORDS[h.municipality];
+            return {
+              name: h.name,
+              count: h.count,
+              severity: SEVERITY_OF[h.confidence],
+              lat: h.lat,
+              lng: h.lng,
+              sources: h.sources,
+              footprint: h.geoJsonPolygon,
+              proximityKm: h.proximityKm,
+              settlementLat: town?.lat,
+              settlementLng: town?.lng,
+              settlementName: h.settlement,
+            };
+          }),
     [visibleHotspots, climate],
   );
   const pinLabel = !focusPlace
@@ -277,6 +311,40 @@ export function EmberDashboard() {
         ? `${focusPlace.name} · HI ${maxHi !== null ? `${Math.round(maxHi)}°C` : "…"}`
         : focusPlace.name;
   const selectedHotspot = visibleHotspots.find((h) => h.id === selectedId) ?? visibleHotspots[0];
+  const weatherLat = place?.lat ?? selectedHotspot?.lat ?? DEFAULT_PLACE.lat;
+  const weatherLng = place?.lng ?? selectedHotspot?.lng ?? DEFAULT_PLACE.lng;
+  const liveWeatherQuery = useQuery({
+    queryKey: ["open-meteo-current", weatherLat.toFixed(3), weatherLng.toFixed(3)],
+    queryFn: async () => {
+      const res = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${weatherLat}&longitude=${weatherLng}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m`,
+      );
+      if (!res.ok) throw new Error("Open-Meteo unavailable");
+      const json = (await res.json()) as {
+        current?: {
+          temperature_2m?: number;
+          relative_humidity_2m?: number;
+          apparent_temperature?: number;
+          wind_speed_10m?: number;
+          wind_direction_10m?: number;
+        };
+      };
+      return json.current ?? null;
+    },
+    staleTime: 10 * 60 * 1000,
+    retry: 1,
+  });
+  const liveWeather = liveWeatherQuery.data;
+  const windMph =
+    liveWeather?.wind_speed_10m != null ? Math.round(liveWeather.wind_speed_10m * 0.621371) : null;
+  const windCardinal =
+    liveWeather?.wind_direction_10m != null
+      ? ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][
+          Math.round(liveWeather.wind_direction_10m / 22.5) % 16
+        ]
+      : null;
+  const humidityPct =
+    liveWeather?.relative_humidity_2m != null ? Math.round(liveWeather.relative_humidity_2m) : null;
   const selectedIndex = selectedHotspot ? visibleHotspots.indexOf(selectedHotspot) : 0;
   const activeCount = isLiveFeedActive
     ? visibleHotspots.reduce((sum, h) => sum + h.count, 0)
@@ -319,14 +387,42 @@ export function EmberDashboard() {
             <span /> FIELD OPERATIONS <span className="ember-eyebrow-date">/ NOV 13, 2026</span>
           </div>
           <h1>
-            Good morning, team<span>.</span>
+            {greeting}<span>.</span>
           </h1>
           <p>Here’s the latest across your monitored region.</p>
         </div>
-        <Button variant="outline" className="ember-export-button" asChild>
-          <Link href="/detections">
-            <Radio size={15} /> Export briefing
-          </Link>
+        <Button
+          variant="outline"
+          className="ember-export-button"
+          onClick={() => {
+            const c = selectedHotspot;
+            const viirsCount = visibleHotspots.filter((h) => (h.sources ?? [h.source]).includes("VIIRS")).length;
+            const modisCount = visibleHotspots.filter((h) => (h.sources ?? [h.source]).includes("MODIS")).length;
+            const rows = [
+              ["Field", "Value"],
+              ["Generated At", new Date().toISOString()],
+              ["Mode", live ? "LIVE FIRMS WFS" : "SAMPLE"],
+              ["Region", regionLabel],
+              ["Active Cluster", c?.name ?? "None"],
+              ["Coordinates", c ? `POINT(${c.lng.toFixed(4)} ${c.lat.toFixed(4)}) · SRID 4326` : "N/A"],
+              ["Proximity", c ? `${c.proximityKm.toFixed(1)} km to ${c.settlement}` : "N/A"],
+              ["Sensors", `[${viirsCount}] VIIRS · [${modisCount}] MODIS`],
+              ["Brightness (K)", c ? `${c.brightness.toFixed(1)} K` : "N/A"],
+              ["Confidence", c ? BADGE_OF[c.confidence] : "N/A"],
+              ["Active Detections", String(activeCount)],
+              ["High Confidence", String(highCount)],
+            ];
+            const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `ember-briefing-${new Date().toISOString().slice(0, 10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
+        >
+          <Radio size={15} /> Export briefing
         </Button>
       </section>
 
@@ -385,12 +481,18 @@ export function EmberDashboard() {
             </span>
           </div>
           <div className="ember-stat-weather">
-            <strong>Elevated</strong>
+            <strong>
+              {humidityPct !== null ? (humidityPct < 45 ? "Elevated" : humidityPct < 70 ? "Moderate" : "Low") : "Elevated"}
+            </strong>
             <span className="ember-weather-dot" />
           </div>
           <div className="ember-stat-foot">
-            <span className="ember-change ember-neutral">WIND 18 MPH</span>
-            <span>ENE · 12% humidity</span>
+            <span className="ember-change ember-neutral">
+              {windMph !== null ? `WIND ${windMph} MPH` : "WIND -- MPH"}
+            </span>
+            <span>
+              {windCardinal ?? "--"} · {humidityPct !== null ? `${humidityPct}%` : "--%"} humidity
+            </span>
           </div>
         </article>
       </section>
