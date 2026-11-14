@@ -10,6 +10,12 @@ export function useTheme() {
       (stored === null && window.matchMedia("(prefers-color-scheme: dark)").matches);
     setDark(initial);
     document.documentElement.classList.toggle("dark", initial);
+    // Each useTheme() call has its own state; follow the <html> class so a toggle anywhere
+    // (e.g. the header button) reaches every user, including the map's basemap.
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => setDark(root.classList.contains("dark")));
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
   }, []);
 
   const toggle = useCallback(() => {
