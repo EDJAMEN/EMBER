@@ -8,6 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.next
 dist
 dist-ssr
 .output
@@ -33,6 +34,6 @@ coverage
 .DS_Store
 *.suo
 *.ntvs*
-*.njsproj
+*.njsprojno
 *.sln
 *.sw?
