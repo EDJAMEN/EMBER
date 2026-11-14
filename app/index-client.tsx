@@ -45,7 +45,8 @@ import { clipToBoundary, contourAreas, fetchHeatGrid, gridDomain } from "@/lib/h
 import type { BoundaryPayload, LevelsPayload } from "@/app/api/boundary/route";
 import { ClimatePanel, HeatScaleSlider } from "@/components/climate-panel";
 import { useTheme } from "@/hooks/use-theme";
-import { booleanPointInPolygon } from "@turf/turf";
+import { booleanPointInPolygon, pointToPolygonDistance } from "@turf/turf";
+import { NEARBY_KM, splitByBorder } from "@/lib/fire-area";
 import { HOTSPOTS, type Confidence, type Hotspot } from "@/lib/hotspots";
 import { WIND_SCALE, compassOf, fetchFireWinds, fetchWindField, keepBox, sampleWind, spreadEllipse, spreadFeatures } from "@/lib/wind";
 import { EmberShell, type EmberLiveStatus } from "@/components/ember-shell";
@@ -275,11 +276,12 @@ export function EmberDashboard() {
   const [live, setLive] = useState(true); // real NASA FIRMS by default; sample data only on request
   const [bbox, setBbox] = useState<[number, number, number, number]>([7.3, 124.5, 8.6, 125.5]);
   const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
-  // Search the chosen area's own extent ([minLat, minLon, maxLat, maxLon]); ~55 km square only without a border.
+  // Search the chosen area's extent plus ~NEARBY_KM around it ([minLat, minLon, maxLat, maxLon]), so fires just
+  // outside the border (which the wind can push in) are known; ~55 km square only without a border.
   // shortcut: an area crossing the dateline is clamped at ±180°, so its far side is not searched; split the box if that matters.
   const effectiveBbox: [number, number, number, number] = place
     ? boundaryBbox
-      ? [boundaryBbox[1], boundaryBbox[0], boundaryBbox[3], boundaryBbox[2]]
+      ? [boundaryBbox[1] - NEARBY_KM / 111, boundaryBbox[0] - NEARBY_KM / 111, boundaryBbox[3] + NEARBY_KM / 111, boundaryBbox[2] + NEARBY_KM / 111]
       : [place.lat - 0.5, place.lng - 0.5, place.lat + 0.5, place.lng + 0.5]
     : bbox;
   const bboxKey = effectiveBbox.map((n) => n.toFixed(2)).join(",");
@@ -315,12 +317,12 @@ export function EmberDashboard() {
   }, [playing]);
 
   // Individual detections passing the filters (live FIRMS pixels, or the sample set).
-  const filteredFires: Hotspot[] = useMemo(() => {
+  // Inside the chosen area's real border (e.g. Valencia City, all of Bukidnon); if it has none, the fires within
+  // NEARBY_KM of the border instead, marked as such, so spread/heatspots still show what threatens the area.
+  const { fires: filteredFires, nearby: firesNearby } = useMemo(() => {
     const query = search.toLowerCase();
     const matchesFilter = (hotspot: Hotspot) => {
       if (confidence !== "all" && hotspot.confidence !== confidence) return false;
-      // Only fires inside the chosen area's real border (e.g. Valencia City, all of Bukidnon).
-      if (boundary && !booleanPointInPolygon([hotspot.lng, hotspot.lat], boundary)) return false;
       const sensors = hotspot.sources ?? [hotspot.source];
       if (!sensors.some((s) => (s === "VIIRS" ? showViirs : showModis))) return false;
       if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
@@ -336,8 +338,11 @@ export function EmberDashboard() {
 
     // Never pass sample fires off as real ones: while live (loading or failed) show none.
     const source = isLiveFeedActive && firmsQuery.data ? firmsQuery.data.data : live || place ? NO_HOTSPOTS : HOTSPOTS;
-    return source.filter(matchesFilter);
+    const fires = source.filter(matchesFilter);
+    if (!boundary) return { fires, nearby: false };
+    return splitByBorder(fires, boundary, booleanPointInPolygon, pointToPolygonDistance);
   }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data, place, live, boundary]);
+  const areaName = boundaryName ?? place?.name ?? "this area";
 
   const visibleHotspots: ClusteredHotspot[] = useMemo(
     () =>
@@ -989,9 +994,19 @@ export function EmberDashboard() {
                         {fireWindQuery.isError
                           ? "Wind forecast unavailable right now."
                           : spreadFires.length === 0
-                            ? "No fires to project in this view."
+                            ? place && boundary
+                              ? `No fires inside ${areaName} or within ${NEARBY_KM} km of it in this time window. Try the 7-day timeline or another area.`
+                              : "No fires to project in this view."
                             : `Projected for the ${spreadFires.length} strongest fires from the hourly wind forecast (head fire ≈ 10% of wind speed). Ignores fuel and slope; hover an area for details.`}
                       </small>
+                    </div>
+                  )}
+                  {firesNearby && (spreadOn || heatOn) && (
+                    <div
+                      role="status"
+                      style={{ marginTop: "10px", padding: "7px 9px", borderRadius: "4px", fontSize: "11px", background: "rgb(255 140 26 / 14%)", border: "1px solid rgb(255 140 26 / 40%)" }}
+                    >
+                      No fires inside {areaName} right now. Showing <b>{filteredFires.length}</b> detection{filteredFires.length === 1 ? "" : "s"} within {NEARBY_KM} km of its border that the wind could push in.
                     </div>
                   )}
                 </div>
@@ -1174,7 +1189,7 @@ export function EmberDashboard() {
               {live
                 ? firmsQuery.isError
                   ? "Live feed failed. No detections shown; try again shortly"
-                  : `${activeCount} live detections · ${place ? (boundary ? `inside ${boundaryName ?? place.name}` : `~55 km around ${place.name}`) : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
+                  : `${activeCount} live detections · ${place ? (boundary ? (firesNearby ? `within ${NEARBY_KM} km of ${areaName} (none inside)` : `inside ${areaName}`) : `~55 km around ${place.name}`) : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
                 : "Live NASA FIRMS feed is not connected"}
             </small>
           </span>
