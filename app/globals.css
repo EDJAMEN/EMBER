@@ -454,3 +454,9 @@
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
 
+/* Printing (e.g. the burning calendar for a barangay notice board): page content only, keep the fire colours. */
+@media print {
+  .ember-sidebar, .ember-topbar, .no-print { display: none !important; }
+  .ember-main { margin-left: 0 !important; }
+  * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+}
