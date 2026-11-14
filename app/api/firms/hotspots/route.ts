@@ -55,6 +55,19 @@ function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number) {
   return 2 * 6371 * Math.asin(Math.sqrt(h));
 }
 
+const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+function compass(fromLat: number, fromLng: number, toLat: number, toLng: number) {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const y = Math.sin(rad(toLng - fromLng)) * Math.cos(rad(toLat));
+  const x =
+    Math.cos(rad(fromLat)) * Math.sin(rad(toLat)) -
+    Math.sin(rad(fromLat)) * Math.cos(rad(toLat)) * Math.cos(rad(toLng - fromLng));
+  const deg = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+  return COMPASS[Math.round(deg / 45) % 8]!;
+}
+
+type Ref = { lat: number; lng: number; name: string };
+
 function parseBbox(raw: string | null): [number, number, number, number] {
   if (!raw) return DEFAULT_BBOX;
   const parts = raw.split(",").map((v) => Number.parseFloat(v.trim()));
@@ -113,6 +126,7 @@ async function fetchWfsLayer(
   typename: string,
   source: SensorSource,
   bbox: [number, number, number, number],
+  ref: Ref | null,
 ): Promise<Hotspot[]> {
   const [minLat, minLon, maxLat, maxLon] = bbox;
   const bboxParam = `${minLat},${minLon},${maxLat},${maxLon},urn:ogc:def:crs:EPSG::4326`;
@@ -127,7 +141,8 @@ async function fetchWfsLayer(
   });
 
   const url = `https://firms.modaps.eosdis.nasa.gov/mapserver/wfs/${region}/${encodeURIComponent(key)}/?${params.toString()}`;
-  const res = await fetch(url, { next: { revalidate: 120 } });
+  // A slow layer (NOAA-20 often is) must not hold up the others.
+  const res = await fetch(url, { next: { revalidate: 120 }, signal: AbortSignal.timeout(25_000) });
   if (!res.ok) {
     throw new Error(`FIRMS WFS ${typename} responded ${res.status}`);
   }
@@ -150,6 +165,20 @@ async function fetchWfsLayer(
       String(props["bright_ti4"] ?? props["brightness"] ?? props["bright_ti5"] ?? ""),
     );
     const brightness = Number.isFinite(brightnessRaw) ? Math.round(brightnessRaw * 10) / 10 : 300;
+    const frpRaw = Number.parseFloat(String(props["frp"] ?? ""));
+    const frp = Number.isFinite(frpRaw) ? frpRaw : undefined;
+
+    if (ref) {
+      // Measured from the searched place itself, e.g. "12 km NE of Valencia City".
+      const km = Math.round(haversineKm(ref.lat, ref.lng, lat, lng) * 10) / 10;
+      const where = km < 1 ? `At ${ref.name}` : `${Math.round(km)} km ${compass(ref.lat, ref.lng, lat, lng)} of ${ref.name}`;
+      out.push({
+        id: 10000 + idx, name: where, source, rawConfidence: rawLabel, confidence, brightness, frp,
+        acqDate, acqTime, lat, lng, settlement: where, municipality: ref.name, proximityKm: km,
+        dayOffset: computeDayOffset(acqDate), count: 1,
+      });
+      return;
+    }
 
     let nearest = TOWNS[0]!;
     let proximityKm = haversineKm(lat, lng, nearest.lat, nearest.lng);
@@ -177,6 +206,7 @@ async function fetchWfsLayer(
       rawConfidence: rawLabel,
       confidence,
       brightness,
+      frp,
       acqDate,
       acqTime,
       lat,
@@ -210,8 +240,15 @@ export async function GET(request: NextRequest) {
       ? regionParam
       : detectRegion(bbox);
 
+  const refLat = Number(searchParams.get("lat"));
+  const refLng = Number(searchParams.get("lng"));
+  const ref: Ref | null =
+    searchParams.has("lat") && Number.isFinite(refLat) && Number.isFinite(refLng) && Math.abs(refLat) <= 90 && Math.abs(refLng) <= 180
+      ? { lat: refLat, lng: refLng, name: (searchParams.get("name") ?? "").slice(0, 80) || "selected place" }
+      : null;
+
   const roundedBboxKey = bbox.map((n) => n.toFixed(2)).join(",");
-  const cacheKey = `${region}|${windowParam}|${roundedBboxKey}`;
+  const cacheKey = `${region}|${windowParam}|${roundedBboxKey}|${ref ? `${ref.lat.toFixed(3)},${ref.lng.toFixed(3)},${ref.name}` : ""}`;
   const now = Date.now();
   const cached = responseCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
@@ -231,7 +268,7 @@ export async function GET(request: NextRequest) {
   ];
 
   const results = await Promise.allSettled(
-    layers.map((layer) => fetchWfsLayer(key, region, layer.typename, layer.source, bbox)),
+    layers.map((layer) => fetchWfsLayer(key, region, layer.typename, layer.source, bbox, ref)),
   );
 
   const merged: Hotspot[] = [];

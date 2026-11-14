@@ -42,11 +42,17 @@ export async function fetchFirmsHotspots(near?: { lat: number; lng: number; name
 export async function fetchFirmsWfsHotspots(params: {
   bbox: [number, number, number, number];
   window: "24h" | "7d";
+  near?: { lat: number; lng: number; name: string } | null; // distances/names are measured from this place
 }): Promise<FirmsWfsResponse> {
   const qs = new URLSearchParams({
     bbox: params.bbox.map((n) => n.toFixed(3)).join(","),
     window: params.window,
   });
+  if (params.near) {
+    qs.set("lat", String(params.near.lat));
+    qs.set("lng", String(params.near.lng));
+    qs.set("name", params.near.name);
+  }
   const res = await fetch(`/api/firms/hotspots?${qs.toString()}`);
   const body = (await res.json()) as Partial<FirmsWfsResponse> & { error?: string };
   if (!res.ok || body.error) {
@@ -107,10 +113,10 @@ export function clusterHotspots(detections: Hotspot[], radiusKm = 2.5): Clustere
       }
     }
 
-    const baseName =
-      closestItem.municipality !== "Regional"
-        ? `${closestItem.municipality} cluster`
-        : lead.name;
+    // Bukidnon towns: "Valencia City cluster"; elsewhere the detection's own name, e.g. "12 km NE of Paris".
+    const baseName = closestItem.settlement.startsWith("Near ")
+      ? `${closestItem.municipality} cluster`
+      : closestItem.name;
 
     return {
       ...lead,

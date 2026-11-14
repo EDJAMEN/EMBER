@@ -6,6 +6,7 @@ import { Droplets, MapPin, Thermometer, Wind } from "lucide-react";
 import type { HeatLevel } from "@/lib/action-guide";
 import type { Conditions } from "@/lib/conditions";
 import type { GuidePlace } from "@/lib/geocode";
+import type { AdminLevel } from "@/app/api/boundary/route";
 import { HEAT_SCALE, HEAT_TICKS, heatColor } from "@/lib/heat-grid";
 import { HEAT_BADGE } from "@/components/smart-action-guide";
 
@@ -128,6 +129,7 @@ function RangePicker({
   onRangeChange,
   coverage,
   loading,
+  failed,
   coverageOf,
 }: {
   what: string;
@@ -136,16 +138,20 @@ function RangePicker({
   onRangeChange: (range: [number, number]) => void;
   coverage: number | null;
   loading: boolean;
+  failed: boolean; // the temperature grid request errored (weather service unreachable)
   coverageOf: string | null; // name of the place the areas are clipped to
 }) {
-  if (!domain || !range) {
-    return (
-      <p style={{ marginTop: "14px", color: "var(--muted-foreground)" }}>
-        {loading ? "Loading the area around this place…" : "Area data is unavailable right now."}
-      </p>
-    );
-  }
-  const [min, max] = domain;
+  // Always usable: before (or without) temperature data the slider spans the whole legend scale,
+  // and the chosen range applies as soon as the data arrives.
+  const [min, max] = domain ?? [0, SCALE_MAX];
+  range = range ?? [min, max];
+  const status = domain
+    ? null
+    : loading
+      ? `Loading ${what} data for this area…`
+      : failed
+        ? `${what[0]!.toUpperCase()}${what.slice(1)} data isn’t available right now (the weather service didn’t respond). Your range applies once it loads.`
+        : null;
   // Track painted with the legend colors across this place's own min–max.
   const stops = Array.from({ length: 11 }, (_, k) => {
     const v = min + ((max - min) * k) / 10;
@@ -200,8 +206,10 @@ function RangePicker({
         <span>{min}°C</span>
         <span>{max}°C</span>
       </div>
-      <p style={{ marginTop: "6px", fontSize: "11px" }}>
-        {coverage === null
+      <p style={{ marginTop: "6px", fontSize: "11px", color: status ? "var(--muted-foreground)" : undefined }}>
+        {status
+          ? status
+          : coverage === null
           ? ""
           : coverage === 0
             ? `No part of ${coverageOf ?? "the area around this place"} has a ${what} in this range.`
@@ -211,6 +219,69 @@ function RangePicker({
   );
 }
 
+
+/** Area level chips: only the levels that really exist for this place, each with its real name. */
+function AreaLevelPicker({
+  levels,
+  levelKey,
+  onLevelChange,
+  missing,
+}: {
+  levels: AdminLevel[] | null;
+  levelKey: string | null;
+  onLevelChange: (key: string) => void;
+  missing: string | null;
+}) {
+  return (
+    <div style={{ marginTop: "12px" }}>
+      <div className="ember-sort-label" style={{ padding: 0, marginBottom: "6px" }}>
+        <span>AREA LEVEL</span>
+      </div>
+      {levels === null ? (
+        <p style={{ color: "var(--muted-foreground)", fontSize: "11px" }}>Finding this place&rsquo;s country, province, city…</p>
+      ) : levels.length === 0 ? (
+        <p style={{ color: "var(--muted-foreground)", fontSize: "11px" }}>No administrative areas found here.</p>
+      ) : (
+        <div role="radiogroup" aria-label="Area level" style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+          {levels.map((l) => {
+            const on = l.key === levelKey;
+            return (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={on}
+                key={l.key}
+                onClick={() => onLevelChange(l.key)}
+                title={`${l.label}: ${l.name}`}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "flex-start",
+                  padding: "5px 9px",
+                  borderRadius: "6px",
+                  border: `1px solid ${on ? "var(--foreground)" : "var(--border)"}`,
+                  background: on ? "var(--accent)" : "transparent",
+                  textAlign: "left",
+                  lineHeight: 1.2,
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "8px", color: "var(--muted-foreground)", textTransform: "uppercase" }}>
+                  {l.label}
+                </span>
+                <span style={{ fontSize: "11px", fontWeight: on ? 700 : 500 }}>{l.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {missing && (
+        <p style={{ marginTop: "6px", fontSize: "11px", color: "var(--muted-foreground)" }}>
+          {missing} has no official border mapped in OpenStreetMap, so it can&rsquo;t be covered precisely. Choose a larger level, such as the city.
+        </p>
+      )}
+    </div>
+  );
+}
 function Big({ value, label }: { value: number | null; label: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "10px 0 6px" }}>
@@ -244,7 +315,12 @@ export function ClimatePanel({
   onRangeChange,
   coverage,
   areasLoading,
+  areasFailed,
   coverageOf,
+  levels,
+  levelKey,
+  onLevelChange,
+  levelMissing,
 }: {
   view: "temperature" | "heatindex";
   place: GuidePlace;
@@ -257,7 +333,12 @@ export function ClimatePanel({
   onRangeChange: (range: [number, number]) => void;
   coverage: number | null;
   areasLoading: boolean;
+  areasFailed: boolean;
   coverageOf: string | null;
+  levels: AdminLevel[] | null; // the place's real hierarchy, largest → smallest
+  levelKey: string | null;
+  onLevelChange: (key: string) => void;
+  levelMissing: string | null; // chosen level has no mapped border (e.g. a barangay mapped as a point)
 }) {
   const badge = HEAT_BADGE[heat];
   const maxHi = conditions?.maxHeatIndexC ?? null;
@@ -271,6 +352,8 @@ export function ClimatePanel({
         <MapPin size={14} /> {place.name}
       </div>
       <div style={{ color: "var(--muted-foreground)", fontSize: "11px" }}>{place.region}</div>
+
+      <AreaLevelPicker levels={levels} levelKey={levelKey} onLevelChange={onLevelChange} missing={levelMissing} />
 
       {error ? (
         <p style={{ marginTop: "10px" }}>Weather data is unavailable right now.</p>
@@ -320,6 +403,7 @@ export function ClimatePanel({
         onRangeChange={onRangeChange}
         coverage={coverage}
         loading={areasLoading}
+        failed={areasFailed}
         coverageOf={coverageOf}
       />
 
@@ -327,7 +411,7 @@ export function ClimatePanel({
         <HeatScaleLegend title={view === "temperature" ? "Temperature" : "Max Heat Index"} />
       </div>
       <p style={{ marginTop: "12px", fontSize: "10px", color: "var(--muted-foreground)" }}>
-        Click anywhere on the map, or search a place, to check another spot. Colored areas cover only the selected city or municipality (its dashed border), or the surrounding ~100 km where no border is found.
+        Click anywhere on the map, or search a place, to check another spot. Colored areas cover exactly the chosen area: its official border (dashed line) from OpenStreetMap.
         Source: Open-Meteo.
       </p>
     </div>

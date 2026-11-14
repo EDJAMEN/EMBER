@@ -1,7 +1,7 @@
 // Self-check: `npx tsx lib/action-guide.check.ts` — exits non-zero on failure.
 import assert from "node:assert/strict";
 import { buildGuide, heatIndexC, heatLevel } from "./action-guide";
-import { clipToBoundary, contourAreas, gridDomain, heatColor, maxHeatIndex } from "./heat-grid";
+import { clipToBoundary, contourAreas, gridDomain, gridPoints, heatColor, maxHeatIndex } from "./heat-grid";
 
 assert.equal(Math.round(heatIndexC(32.22, 70)), 41, "matches NWS table (90°F / 70% → 106°F)");
 assert.equal(heatLevel(26.4), "None");
@@ -70,3 +70,15 @@ assert.ok(warmInEast.coverage > 0 && warmInEast.coverage < 0.6, `partial coverag
 const far = { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] };
 assert.equal(clipToBoundary(all.areas, far).areas.features.length, 0, "boundary elsewhere → nothing");
 console.log("boundary clip check passed");
+// area-mode grid: 9×9 spread over a province-sized box, contoured with its own spacing
+const bukidnonBox: [number, number, number, number] = [124.4, 7.4, 125.6, 8.6];
+const areaPts = gridPoints(8, 125, bukidnonBox);
+assert.equal(areaPts.length, 81);
+assert.ok(areaPts[0]!.lng < 124.4 && areaPts[0]!.lat < 7.4 && areaPts[80]!.lng > 125.6 && areaPts[80]!.lat > 8.6, "padded around the area");
+const tinyPts = gridPoints(8, 125, [125, 8, 125.01, 8.01]);
+assert.ok(tinyPts[80]!.lng - tinyPts[0]!.lng >= 0.119, "villages get a minimum span");
+const areaCells = areaPts.map((p, k) => ({ ...p, tempC: 20 + (k % 9), maxHeatIndexC: null }));
+const areaAll = contourAreas(areaCells, "tempC", 20, 28);
+const xs = areaAll.areas.features.flatMap((f) => f.geometry.coordinates.flat(2).map(([x]) => x!));
+assert.ok(Math.min(...xs) <= areaPts[0]!.lng + 1e-6 && Math.max(...xs) >= areaPts[8]!.lng - 1e-6, "contours span the whole area, not 0.15° steps");
+console.log("area grid check passed");
