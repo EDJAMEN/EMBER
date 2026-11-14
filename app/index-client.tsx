@@ -10,6 +10,9 @@ import {
   ArrowUpRight,
   Check,
   ChevronRight,
+  Droplets,
+  Globe,
+  Map as MapIcon,
   Flame,
   LocateFixed,
   MapPin,
@@ -23,6 +26,7 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
+  Thermometer,
   Wind,
   X,
 } from "lucide-react";
@@ -30,16 +34,56 @@ import { Button } from "@/components/ui/button";
 const EmberMap = dynamic(() => import("@/components/ember-map").then((m) => m.EmberMap), {
   ssr: false,
 });
-import { EmberShell, type EmberLiveStatus } from "@/components/ember-shell";
-import type { EmberMapLayers } from "@/components/ember-map";
+import { SmartActionGuide } from "@/components/smart-action-guide";
+import { PlaceCombobox } from "@/components/place-combobox";
+import { DEFAULT_PLACE, firmsKey, type GuidePlace } from "@/lib/geocode";
+import { conditionsKey, fetchConditions } from "@/lib/conditions";
+import { heatIndexC, heatLevel } from "@/lib/action-guide";
+import { contourAreas, fetchHeatGrid, gridDomain } from "@/lib/heat-grid";
+import { ClimatePanel, HeatScaleSlider } from "@/components/climate-panel";
 import { useTheme } from "@/hooks/use-theme";
-import { HOTSPOTS, type Confidence } from "@/lib/hotspots";
+import { HOTSPOTS, type Confidence, type Hotspot } from "@/lib/hotspots";
+import { EmberShell, type EmberLiveStatus } from "@/components/ember-shell";
+import type { EmberMapInstance, EmberMapLayers } from "@/components/ember-map";
 import {
   clusterHotspots,
   fetchFirmsWfsHotspots,
   type ClusteredHotspot,
 } from "@/lib/firms-client";
-import type L from "leaflet";
+
+const NO_HOTSPOTS: Hotspot[] = []; // stable empty list so memoized map data doesn't change every render
+
+type OverviewView = "fires" | "temperature" | "heatindex";
+type MapView = "globe" | "mercator"; // 3D globe or flat map projection
+const VIEWS: OverviewView[] = ["fires", "temperature", "heatindex"];
+const MAP_SEARCH_ID = "ember-map-search-input";
+const OVERVIEW_STORAGE_KEY = "ember.overview.v1";
+
+function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView?: MapView } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OVERVIEW_STORAGE_KEY) ?? "null") as {
+      place?: Partial<GuidePlace> | null;
+      view?: unknown;
+      mapView?: unknown;
+    } | null;
+    const p = saved?.place;
+    const validPlace =
+      p &&
+      typeof p.name === "string" &&
+      typeof p.region === "string" &&
+      Number.isFinite(p.lat) &&
+      Number.isFinite(p.lng) &&
+      Math.abs(p.lat!) <= 90 &&
+      Math.abs(p.lng!) <= 180;
+    return {
+      place: validPlace ? (p as GuidePlace) : undefined,
+      view: VIEWS.includes(saved?.view as OverviewView) ? (saved!.view as OverviewView) : undefined,
+      mapView: saved?.mapView === "globe" || saved?.mapView === "mercator" ? saved.mapView : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
 
 const SEVERITY_OF: Record<Confidence, string> = {
   high: "critical",
@@ -53,40 +97,108 @@ const BADGE_OF: Record<Confidence, string> = {
   low: "LOW",
 };
 
-const DEFAULT_BBOX: [number, number, number, number] = [7.3, 124.5, 8.6, 125.5];
-
 export function EmberDashboard() {
-  useTheme();
-  const mapRef = useRef<L.Map | null>(null);
-  const handleMapReady = useCallback((map: L.Map) => {
+  const { dark } = useTheme();
+  const mapRef = useRef<EmberMapInstance | null>(null);
+  const handleMapReady = useCallback((map: EmberMapInstance) => {
     mapRef.current = map;
   }, []);
+  // null = default monitored region (Bukidnon); set = any searched/located/clicked place on Earth.
+  const [place, setPlace] = useState<GuidePlace | null>(null);
+  const [view, setView] = useState<OverviewView>("fires");
+  const [mapView, setMapView] = useState<MapView>("globe");
+  const [restored, setRestored] = useState(false);
+  const handleLocate = useCallback((place: GuidePlace) => {
+    setPlace(place);
+    setLive(true);
+    setDayCursor(0);
+  }, []);
+
+  // Survive a refresh: restore the last place + view, then keep them saved (per-browser convenience only).
+  useEffect(() => {
+    const saved = readSavedOverview();
+    if (saved.place) handleLocate(saved.place);
+    if (saved.view) setView(saved.view);
+    if (saved.mapView) setMapView(saved.mapView);
+    setRestored(true);
+  }, [handleLocate]);
+  useEffect(() => {
+    if (!restored) return;
+    try {
+      localStorage.setItem(OVERVIEW_STORAGE_KEY, JSON.stringify({ place, view, mapView }));
+    } catch {
+      // storage blocked (private mode etc.) — the page still works, it just won't remember
+    }
+  }, [place, view, mapView, restored]);
+
+  const climate = view !== "fires"; // temperature or heat-index view
+  const focusPlace = place ?? (climate ? DEFAULT_PLACE : null);
+  const conditionsQuery = useQuery({
+    queryKey: conditionsKey(focusPlace?.lat ?? 0, focusPlace?.lng ?? 0),
+    queryFn: () => fetchConditions(focusPlace!.lat, focusPlace!.lng),
+    enabled: climate && focusPlace !== null,
+    staleTime: 10 * 60 * 1000,
+  });
+  const gridQuery = useQuery({
+    queryKey: ["heat-grid", focusPlace?.lat ?? 0, focusPlace?.lng ?? 0],
+    queryFn: () => fetchHeatGrid(focusPlace!.lat, focusPlace!.lng),
+    enabled: climate && focusPlace !== null,
+    staleTime: 30 * 60 * 1000,
+  });
+  const temp = conditionsQuery.data;
+  const heatIdx = temp?.tempC != null && temp.humidity != null ? heatIndexC(temp.tempC, temp.humidity) : null;
+  const heat = heatIdx === null ? "None" : heatLevel(heatIdx);
+  const maxHi = temp?.maxHeatIndexC ?? null;
+  const gridCells = gridQuery.data;
+  const metric = view === "temperature" ? "tempC" : "maxHeatIndexC";
+  const domain = useMemo(() => (climate && gridCells ? gridDomain(gridCells, metric) : null), [climate, gridCells, metric]);
+  // Slider selection; null = the full range of values around the place.
+  const [tempRange, setTempRange] = useState<[number, number] | null>(null);
+  useEffect(() => setTempRange(null), [domain]); // new place or metric → show everything again
+  const range: [number, number] | null = domain
+    ? [
+        Math.max(domain[0], Math.min(tempRange?.[0] ?? domain[0], domain[1])),
+        Math.min(domain[1], Math.max(tempRange?.[1] ?? domain[1], domain[0])),
+      ]
+    : null;
+  const rangeLo = range?.[0];
+  const rangeHi = range?.[1];
+  const contours = useMemo(
+    () =>
+      gridCells && rangeLo !== undefined && rangeHi !== undefined
+        ? contourAreas(gridCells, metric, rangeLo, rangeHi)
+        : null,
+    [gridCells, metric, rangeLo, rangeHi],
+  );
   const [confidence, setConfidence] = useState<"all" | Confidence>("all");
   const [showViirs, setShowViirs] = useState(true);
   const [showModis, setShowModis] = useState(true);
   const [dayCursor, setDayCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [live, setLive] = useState(false);
-  const [bbox, setBbox] = useState<[number, number, number, number]>(DEFAULT_BBOX);
-  const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
-  const bboxKey = bbox.map((n) => n.toFixed(2)).join(",");
-
-  const firmsQuery = useQuery({
-    queryKey: ["firms-wfs", wfsWindow, bboxKey],
-    queryFn: () => fetchFirmsWfsHotspots({ bbox, window: wfsWindow }),
-    enabled: live,
-    staleTime: 2 * 60 * 1000,
-    retry: 1,
-  });
-
-  const [selectedId, setSelectedId] = useState<number>(HOTSPOTS[0]?.id ?? 0);
-  const [panSeq, setPanSeq] = useState(0);
+  const [bbox, setBbox] = useState<[number, number, number, number]>([7.3, 124.5, 8.6, 125.5]);
   const [layers, setLayers] = useState<EmberMapLayers>({
     blueMarble: true,
     countryBorders: true,
     firmsWms: true,
     clusteredHotspots: true,
   });
+  const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
+  const effectiveBbox: [number, number, number, number] = place
+    ? [place.lat - 0.5, place.lng - 0.5, place.lat + 0.5, place.lng + 0.5]
+    : bbox;
+  const bboxKey = effectiveBbox.map((n) => n.toFixed(2)).join(",");
+  const firmsQuery = useQuery({
+    queryKey: ["firms-wfs", wfsWindow, bboxKey],
+    queryFn: () => fetchFirmsWfsHotspots({ bbox: effectiveBbox, window: wfsWindow }),
+    enabled: live,
+    staleTime: 2 * 60 * 1000,
+    retry: 1,
+  });
+  const isLiveFeedActive = live && Boolean(firmsQuery.data);
+  const regionLabel = place ? [place.name, place.region].filter(Boolean).join(" · ") : "Bukidnon, Mindanao · Philippines";
+  const [selectedId, setSelectedId] = useState<number>(HOTSPOTS[0]?.id ?? 0);
+  const [selectedLayer, setSelectedLayer] = useState("Thermal anomalies");
   const [search, setSearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -104,37 +216,57 @@ export function EmberDashboard() {
     return () => clearInterval(timer);
   }, [playing]);
 
-  const isLiveFeedActive = live && Boolean(firmsQuery.data);
-
   const visibleHotspots: ClusteredHotspot[] = useMemo(() => {
     const query = search.toLowerCase();
-    const matchesFilter = (hotspot: (typeof HOTSPOTS)[number]) => {
+    const matchesFilter = (hotspot: Hotspot) => {
       if (confidence !== "all" && hotspot.confidence !== confidence) return false;
-      if (hotspot.source === "VIIRS" && !showViirs) return false;
-      if (hotspot.source === "MODIS" && !showModis) return false;
+      const sensors = hotspot.sources ?? [hotspot.source];
+      if (!sensors.some((s) => (s === "VIIRS" ? showViirs : showModis))) return false;
       if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
       if (
         query &&
         !`${hotspot.name} ${hotspot.settlement} ${hotspot.municipality}`
           .toLowerCase()
           .includes(query)
-      ) {
+      )
         return false;
-      }
       return true;
     };
 
     if (isLiveFeedActive && firmsQuery.data) {
-      const filteredLive = firmsQuery.data.data.filter(matchesFilter);
-      return clusterHotspots(filteredLive);
+      return clusterHotspots(firmsQuery.data.data.filter(matchesFilter));
     }
 
-    return HOTSPOTS.filter(matchesFilter).map((h) => ({
+    const fallback = place ? NO_HOTSPOTS : HOTSPOTS;
+    return fallback.filter(matchesFilter).map((h) => ({
       ...h,
       highConfidenceCount: h.confidence === "high" ? 1 : 0,
     }));
-  }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data]);
+  }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data, place]);
 
+  // Memoized: a new array every render would re-run the map's marker/pan effect and cut off fly-to animations.
+  const mapIncidents = useMemo(
+    () =>
+      climate
+        ? []
+        : visibleHotspots.map((h) => ({
+            name: h.name,
+            count: h.count,
+            severity: SEVERITY_OF[h.confidence],
+            lat: h.lat,
+            lng: h.lng,
+            sources: h.sources,
+            footprint: h.geoJsonPolygon,
+          })),
+    [visibleHotspots, climate],
+  );
+  const pinLabel = !focusPlace
+    ? ""
+    : view === "temperature"
+      ? `${focusPlace.name} · ${temp?.tempC != null ? `${Math.round(temp.tempC)}°C` : "…"}`
+      : view === "heatindex"
+        ? `${focusPlace.name} · HI ${maxHi !== null ? `${Math.round(maxHi)}°C` : "…"}`
+        : focusPlace.name;
   const selectedHotspot = visibleHotspots.find((h) => h.id === selectedId) ?? visibleHotspots[0];
   const selectedIndex = selectedHotspot ? visibleHotspots.indexOf(selectedHotspot) : 0;
   const activeCount = isLiveFeedActive
@@ -258,17 +390,56 @@ export function EmberDashboard() {
         <div className="ember-section-heading">
           <div>
             <h2>Regional overview</h2>
-            <p>
-              Bukidnon, Mindanao <span>·</span> Philippines
-            </p>
+            <p>{regionLabel}</p>
           </div>
           <div className="ember-map-heading-actions">
+            <div className="ember-window-selector" role="radiogroup" aria-label="Map view">
+              {(
+                [
+                  ["globe", "GLOBE", Globe],
+                  ["mercator", "FLAT", MapIcon],
+                ] as const
+              ).map(([key, label, Icon]) => (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={mapView === key}
+                  key={key}
+                  className={mapView === key ? "selected" : ""}
+                  onClick={() => setMapView(key)}
+                  title={key === "globe" ? "3D globe view" : "Flat map view"}
+                >
+                  <Icon size={12} style={{ display: "inline", verticalAlign: "-2px" }} /> {label}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={`Location: ${focusPlace?.name ?? "Bukidnon region"}. Search a place`}
+              title="Search a place"
+              onClick={() => {
+                const input = document.getElementById(MAP_SEARCH_ID);
+                input?.scrollIntoView({ block: "center", behavior: "smooth" });
+                input?.focus({ preventScroll: true });
+              }}
+            >
+              <MapPin size={14} /> LOCATION
+              <span style={{ fontWeight: 400, opacity: 0.75, maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {focusPlace?.name ?? "Bukidnon"}
+              </span>
+            </Button>
+            {view === "fires" && (
+            <>
             <div className="ember-window-selector" aria-label="Data source">
               <button
                 type="button"
                 aria-pressed={!live}
                 className={!live ? "selected" : ""}
-                onClick={() => setLive(false)}
+                onClick={() => {
+                  setLive(false);
+                  setPlace(null); // back to the Bukidnon sample region
+                }}
               >
                 SAMPLE
               </button>
@@ -299,6 +470,8 @@ export function EmberDashboard() {
                 MODIS
               </button>
             </div>
+            </>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -313,48 +486,55 @@ export function EmberDashboard() {
           <div
             className="ember-map-canvas"
             role="img"
-            aria-label="NASA GIBS Blue Marble and FIRMS thermal anomaly map of Bukidnon, Mindanao"
+            aria-label={`OpenStreetMap-based thermal anomaly map of ${regionLabel}`}
           >
             <EmberMap
-              incidents={visibleHotspots.map((h) => ({
-                id: h.id,
-                name: h.name,
-                count: h.count,
-                severity: SEVERITY_OF[h.confidence],
-                lat: h.lat,
-                lng: h.lng,
-              }))}
+              incidents={mapIncidents}
               selected={Math.max(selectedIndex, 0)}
               onSelect={(index) => {
                 const hotspot = visibleHotspots[index];
-                if (hotspot) {
-                  setSelectedId(hotspot.id);
-                  setPanSeq((s) => s + 1);
-                }
+                if (hotspot) setSelectedId(hotspot.id);
               }}
+              dark={dark}
+              onReady={handleMapReady}
               layers={layers}
               showViirs={showViirs}
               showModis={showModis}
-              panSeq={panSeq}
               onBoundsChange={setBbox}
-              onReady={handleMapReady}
+              projection={mapView}
+              focus={focusPlace ? { lat: focusPlace.lat, lng: focusPlace.lng, label: pinLabel } : null}
+              areas={climate ? (contours?.areas ?? null) : null}
+              onMapClick={
+                climate
+                  ? (lat, lng) =>
+                      handleLocate({ name: "Selected point", region: `${lat.toFixed(3)}, ${lng.toFixed(3)}`, lat, lng })
+                  : undefined
+              }
             />
 
-            <div className="ember-map-search">
-              <Search size={15} />
-              <input
-                aria-label="Search location"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search location or incident"
-              />
-              {search && (
-                <button aria-label="Clear search" onClick={() => setSearch("")}>
-                  <X size={14} />
-                </button>
-              )}
-              <kbd>⌘ K</kbd>
-            </div>
+            <PlaceCombobox
+              inputId={MAP_SEARCH_ID}
+              className="ember-map-search"
+              label="Search any place or filter incidents"
+              placeholder="Search any place or incident"
+              value={search}
+              onChange={setSearch}
+              onPick={(picked) => {
+                setSearch("");
+                handleLocate(picked);
+              }}
+              before={<Search size={15} />}
+              after={
+                <>
+                  {search && (
+                    <button aria-label="Clear search" onClick={() => setSearch("")}>
+                      <X size={14} />
+                    </button>
+                  )}
+                  <kbd>⌘ K</kbd>
+                </>
+              }
+            />
             <div className="ember-map-tools">
               <Button
                 variant="ghost"
@@ -379,8 +559,9 @@ export function EmberDashboard() {
                 aria-label="Center map"
                 onClick={() =>
                   mapRef.current?.panTo([
-                    selectedHotspot?.lat ?? 7.95,
+                    // MapLibre takes [lng, lat]
                     selectedHotspot?.lng ?? 125.05,
+                    selectedHotspot?.lat ?? 7.95,
                   ])
                 }
               >
@@ -432,6 +613,21 @@ export function EmberDashboard() {
                     </button>
                   );
                 })}
+                {["Thermal anomalies", "Settlement proximity", "Detection heatmap"].map((layer) => (
+                  <button
+                    type="button"
+                    className="ember-layer-option"
+                    key={layer}
+                    onClick={() => setSelectedLayer(layer)}
+                  >
+                    <span>{layer}</span>
+                    <span
+                      className={`ember-layer-check ${selectedLayer === layer ? "checked" : ""}`}
+                    >
+                      {selectedLayer === layer && <Check size={12} />}
+                    </span>
+                  </button>
+                ))}
                 <div className="ember-layer-divider" />
                 <label className="ember-confidence-label">CONFIDENCE</label>
                 <div className="ember-confidence-options">
@@ -454,29 +650,82 @@ export function EmberDashboard() {
                 </div>
               </div>
             )}
-            <div className="ember-map-legend">
-              <span className="ember-legend-title">DETECTION DENSITY</span>
-              <div className="ember-legend-scale">
-                <i />
-                <i />
-                <i />
-                <i />
-                <i />
-                <span>Low</span>
-                <span>High</span>
+            {climate ? (
+              <div className="ember-map-legend" style={{ width: "min(380px, calc(100% - 90px))" }}>
+                <HeatScaleSlider
+                  title={view === "temperature" ? "Temperature" : "Max Heat Index"}
+                  range={range}
+                  domain={domain}
+                  onRangeChange={setTempRange}
+                />
               </div>
-              <div className="ember-legend-divider" />
-              <div className="ember-legend-settlement">
-                <MapPin size={12} /> Settlement{" "}
-                <span className="ember-settlement-distance">&lt; 10 km</span>
+            ) : (
+              <div className="ember-map-legend">
+                <span className="ember-legend-title">DETECTION DENSITY</span>
+                <div className="ember-legend-scale">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <span>Low</span>
+                  <span>High</span>
+                </div>
+                <div className="ember-legend-divider" />
+                <div className="ember-legend-settlement">
+                  <MapPin size={12} /> Settlement{" "}
+                  <span className="ember-settlement-distance">&lt; 10 km</span>
+                </div>
               </div>
-            </div>
+            )}
             <div className="ember-map-compass">
               N<span>↑</span>
             </div>
           </div>
 
           <aside className="ember-incident-panel" id="incidents">
+            <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+              <div className="ember-sort-label" style={{ padding: 0, marginBottom: "8px" }}>
+                <span>SHOW ON MAP</span>
+              </div>
+              <div className="ember-window-selector" role="radiogroup" aria-label="What to show on the map" style={{ width: "100%", display: "flex" }}>
+                {(
+                  [
+                    ["fires", "Wildfires", Flame],
+                    ["temperature", "Temperature", Thermometer],
+                    ["heatindex", "Heat index", Droplets],
+                  ] as const
+                ).map(([key, label, Icon]) => (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={view === key}
+                    key={key}
+                    className={view === key ? "selected" : ""}
+                    onClick={() => setView(key)}
+                    style={{ flex: 1 }}
+                  >
+                    <Icon size={12} style={{ display: "inline", verticalAlign: "-2px" }} /> {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {climate && focusPlace ? (
+              <ClimatePanel
+                view={view as "temperature" | "heatindex"}
+                place={focusPlace}
+                conditions={temp}
+                error={conditionsQuery.isError}
+                heatIndexNow={heatIdx}
+                heat={heat}
+                domain={domain}
+                range={range}
+                onRangeChange={setTempRange}
+                coverage={contours?.coverage ?? null}
+                areasLoading={gridQuery.isLoading}
+              />
+            ) : (
+              <>
             <div className="ember-panel-header">
               <div>
                 <div className="ember-panel-title">
@@ -506,10 +755,7 @@ export function EmberDashboard() {
                     type="button"
                     className={`ember-incident-row ${active ? "active" : ""}`}
                     key={hotspot.id}
-                    onClick={() => {
-                      setSelectedId(hotspot.id);
-                      setPanSeq((s) => s + 1);
-                    }}
+                    onClick={() => setSelectedId(hotspot.id)}
                   >
                     <span
                       className={`ember-incident-indicator indicator-${SEVERITY_OF[hotspot.confidence]}`}
@@ -527,7 +773,7 @@ export function EmberDashboard() {
                           {BADGE_OF[hotspot.confidence]}
                         </i>
                       </span>
-                      <span className="ember-incident-area">{hotspot.municipality}, Bukidnon</span>
+                      <span className="ember-incident-area">{place ? `${hotspot.proximityKm.toFixed(1)} km from ${place.name}` : `${hotspot.municipality}, Bukidnon`}</span>
                       <span className="ember-incident-meta">
                         {hotspot.acqTime}
                         <span>·</span>
@@ -557,6 +803,8 @@ export function EmberDashboard() {
                   {selectedHotspot.name}
                   <span className="ember-detail-status">
                     {BADGE_OF[selectedHotspot.confidence]} confidence
+                    {selectedHotspot.fusedConfidencePercent !== undefined &&
+                      ` · ${selectedHotspot.fusedConfidencePercent}%`}
                   </span>
                 </div>
                 <p>
@@ -568,14 +816,18 @@ export function EmberDashboard() {
                     <b>{selectedHotspot.count}</b> thermal pixels
                   </span>
                   <span>
-                    <Radio size={13} /> {selectedHotspot.source} ·{" "}
-                    {selectedHotspot.brightness.toFixed(1)} K
+                    <Radio size={13} />{" "}
+                    {(selectedHotspot.sources ?? [selectedHotspot.source]).join(" + ")} ·{" "}
+                    {selectedHotspot.brightness} K
+                    {selectedHotspot.frp !== undefined && ` · ${selectedHotspot.frp} MW`}
                   </span>
                 </div>
                 <p style={{ marginTop: "8px" }}>
-                  POINT({selectedHotspot.lng.toFixed(4)} {selectedHotspot.lat.toFixed(4)}) · SRID 4326
+                  POINT({selectedHotspot.lng} {selectedHotspot.lat}) · SRID 4326
                 </p>
               </div>
+            )}
+              </>
             )}
           </aside>
         </div>
@@ -615,6 +867,7 @@ export function EmberDashboard() {
             {playing ? <Pause size={14} /> : <Play size={14} />}
           </Button>
         </div>
+        <SmartActionGuide place={place ?? DEFAULT_PLACE} onLocate={handleLocate} />
       </section>
 
       <section className="ember-bottom-strip">
@@ -627,18 +880,15 @@ export function EmberDashboard() {
             <small>
               {live
                 ? firmsQuery.isError
-                  ? firmsQuery.error instanceof Error
-                    ? firmsQuery.error.message
-                    : "Live feed failed, showing sample data"
-                  : `${firmsQuery.data?.rawCount ?? 0} live detections · ${firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"} (${wfsWindow})`
+                  ? "Live feed failed, showing sample data"
+                  : `${firmsQuery.data?.rawCount ?? 0} live detections · ${place ? `~55 km around ${place.name}` : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
                 : "Live NASA FIRMS feed is not connected"}
             </small>
           </span>
         </div>
         <div className="ember-bottom-right">
           <span>
-            <span className="ember-pulse-dot" />{" "}
-            {live ? (firmsQuery.isError ? "Feed degraded" : "Live FIRMS WFS") : "Demo environment"}
+            <span className="ember-pulse-dot" /> Demo environment
           </span>
           <button aria-label="More system status">
             <MoreHorizontal size={17} />
