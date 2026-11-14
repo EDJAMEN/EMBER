@@ -9,7 +9,7 @@ import maplibregl, {
   type MapGeoJSONFeature,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon, Position } from "geojson";
+import type { FeatureCollection, MultiPolygon, Point, Polygon } from "geojson";
 
 export type EmberMapIncident = {
   name: string;
@@ -307,19 +307,6 @@ const titleCase = (s: string) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.
 const setData = (map: maplibregl.Map, id: string, data: FeatureCollection) =>
   map.style && (map.getSource(id) as GeoJSONSource | undefined)?.setData(data);
 
-/** [west, south, east, north] of every coordinate in the given features. */
-function bboxOf(features: Feature[]): [number, number, number, number] | null {
-  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-  const visit = (c: unknown): void => {
-    if (Array.isArray(c) && typeof c[0] === "number") {
-      const [x, y] = c as Position;
-      w = Math.min(w, x!); e = Math.max(e, x!); s = Math.min(s, y!); n = Math.max(n, y!);
-    } else if (Array.isArray(c)) c.forEach(visit);
-  };
-  features.forEach((f) => f.geometry && "coordinates" in f.geometry && visit(f.geometry.coordinates));
-  return Number.isFinite(w) ? [w, s, e, n] : null;
-}
-
 export function EmberMap({
   incidents,
   selected,
@@ -339,6 +326,9 @@ export function EmberMap({
   wind = null,
   spread = null,
   spreadWinds = null,
+  spreadPreviewHour = null,
+  activeDate = null,
+  isHistoricalDate = false,
   heatPoints = null,
   onViewChange,
 }: {
@@ -346,6 +336,9 @@ export function EmberMap({
   wind?: WindField | null; // global live wind → animated particles over the whole map
   spread?: FeatureCollection | null; // projected fire spread areas
   spreadWinds?: FireWind[] | null; // per-fire hourly wind → animated fire front
+  spreadPreviewHour?: number | null; // when scrubbing SUB-DAILY timeline, pin spread front to this hour
+  activeDate?: string | null; // YYYY-MM-DD scrubbed timeline date for NASA GIBS & FIRMS WMS TIME=
+  isHistoricalDate?: boolean; // true when viewing a past historical archive date
   heatPoints?: { lat: number; lng: number; weight: number }[] | null; // detections for the heat glow
   projection?: "globe" | "mercator"; // map view: 3D globe or flat map
   incidents: EmberMapIncident[];
@@ -382,7 +375,7 @@ export function EmberMap({
   const pinRef = useRef<{ marker: maplibregl.Marker; label: HTMLSpanElement } | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const prevSelectedRef = useRef(selected);
-  const [boundary, setBoundary] = useState<FeatureCollection | null>(null);
+  const gibsUrlRef = useRef<string | null>(null);
   // Bumped on every style (re)load so data effects re-push into the fresh sources.
   const [styleVersion, setStyleVersion] = useState(0);
   // WMS tiles 503 without a server key, so only mount the source once the proxy confirms one.
@@ -498,53 +491,11 @@ export function EmberMap({
   }, [projection]);
 
   useEffect(() => {
-    let cancelled = false;
-    // A slow or blocked GADM download must not strand the camera on the globe with the fires behind it.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    fetch("https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_PHL_2.json", {
-      signal: controller.signal,
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("boundary fetch failed");
-        return res.json() as Promise<FeatureCollection>;
-      })
-      .then((collection) => {
-        clearTimeout(timeout);
-        const map = mapRef.current;
-        if (cancelled || !map) return;
-        const props = (f: Feature) => (f.properties ?? {}) as Record<string, unknown>;
-        const nameOf = (f: Feature) =>
-          ["NAME_2", "NAME_1", "name", "province", "PROVINCE"]
-            .map((key) => props(f)[key])
-            .find((v): v is string => typeof v === "string") ?? "Province";
-        const isBukidnon = (f: Feature) =>
-          Object.values(props(f)).some((v) => typeof v === "string" && v.toLowerCase() === "bukidnon");
-        const features = collection.features.map((f) => ({
-          ...f,
-          properties: { name: nameOf(f), buk: isBukidnon(f) },
-        }));
-        setBoundary({ type: "FeatureCollection", features });
-        const box = bboxOf(features.filter((f) => f.properties.buk)) ?? bboxOf(features);
-        // Descend from the globe to the region, unless a restored/picked place already took over.
-        if (box && !focusRef.current) map.fitBounds(box, { padding: 24, duration: 3000 });
-      })
-      .catch(() => {
-        clearTimeout(timeout);
-        const map = mapRef.current;
-        if (!cancelled && map && !focusRef.current) map.flyTo({ center: [125.05, 7.95], zoom: 8, duration: 3000 });
-      });
-    return () => {
-      cancelled = true;
-      clearTimeout(timeout);
-      controller.abort();
-    };
-  }, []);
-
-  useEffect(() => {
     const map = mapRef.current;
-    if (map && boundary) setData(map, "ember-boundary", boundary);
-  }, [boundary, styleVersion]);
+    if (map && !focusRef.current) {
+      map.flyTo({ center: [125.05, 7.95], zoom: 8, duration: 3000 });
+    }
+  }, []);
 
   // Fire clusters (fused MODIS + VIIRS): footprint polygons as a map layer.
   useEffect(() => {
@@ -585,12 +536,24 @@ export function EmberMap({
       }
     }
 
+    const gibsUrl =
+      isHistoricalDate && activeDate
+        ? `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${activeDate}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`
+        : BLUE_MARBLE_URL;
+    const gibsMaxZoom = isHistoricalDate && activeDate ? 9 : 8;
+
+    if (gibsUrlRef.current !== gibsUrl) {
+      if (map.getLayer("nasa-gibs-bluemarble-layer")) map.removeLayer("nasa-gibs-bluemarble-layer");
+      if (map.getSource("nasa-gibs-bluemarble")) map.removeSource("nasa-gibs-bluemarble");
+      gibsUrlRef.current = gibsUrl;
+    }
+
     if (!map.getSource("nasa-gibs-bluemarble")) {
       map.addSource("nasa-gibs-bluemarble", {
         type: "raster",
-        tiles: [BLUE_MARBLE_URL],
+        tiles: [gibsUrl],
         tileSize: 256,
-        maxzoom: 8,
+        maxzoom: gibsMaxZoom,
       });
       // Under the basemap's place/road labels (satellite + names, like a hybrid map) and therefore under the
       // 3D buildings and EMBER's data layers; fall back to those if the style has no labels.
@@ -639,19 +602,22 @@ export function EmberMap({
       );
     }
 
+    const activeYear = activeDate ? Number(activeDate.slice(0, 4)) : 9999;
+    const viirsAvailable = activeYear >= 2012;
     const activeWmsLayers: string[] = [];
-    if (showViirs) activeWmsLayers.push("fires_viirs_24");
+    if (showViirs && viirsAvailable) activeWmsLayers.push("fires_viirs_24");
     if (showModis) activeWmsLayers.push("fires_modis_24");
-    if (showViirs) activeWmsLayers.push("fires_landsat_24");
+    if (showViirs && viirsAvailable) activeWmsLayers.push("fires_landsat_24");
 
     if (map.getLayer("nasa-firms-wms-layer")) map.removeLayer("nasa-firms-wms-layer");
     if (map.getSource("nasa-firms-wms")) map.removeSource("nasa-firms-wms");
 
     if (wmsReady && layers.firmsWms && activeWmsLayers.length > 0) {
+      const timeQuery = activeDate ? `&TIME=${encodeURIComponent(activeDate)}` : "";
       map.addSource("nasa-firms-wms", {
         type: "raster",
         tiles: [
-          `/api/firms/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=${activeWmsLayers.join(",")}&FORMAT=image/png&TRANSPARENT=true&SRS=EPSG:3857&WIDTH=512&HEIGHT=512&BBOX={bbox-epsg-3857}`,
+          `/api/firms/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=${activeWmsLayers.join(",")}&FORMAT=image/png&TRANSPARENT=true&SRS=EPSG:3857&WIDTH=512&HEIGHT=512${timeQuery}&BBOX={bbox-epsg-3857}`,
         ],
         tileSize: 512, // 4× fewer requests than 256 px tiles; each one costs a FIRMS transaction
       });
@@ -661,7 +627,7 @@ export function EmberMap({
         source: "nasa-firms-wms",
       });
     }
-  }, [styleVersion, layers.blueMarble, layers.countryBorders, layers.firmsWms, wmsReady, showViirs, showModis]);
+  }, [styleVersion, layers.blueMarble, layers.countryBorders, layers.firmsWms, wmsReady, showViirs, showModis, activeDate, isHistoricalDate]);
 
   // Fire clusters: glowing count markers (DOM, unaffected by style reloads).
   useEffect(() => {
@@ -738,7 +704,7 @@ export function EmberMap({
     if (map) setData(map, "ember-spread", spread ?? EMPTY);
   }, [spread, styleVersion]);
 
-  // Fire-front time-lapse: every fire's spread grows from 0 to 6 h (6 s), holds, and repeats.
+  // Fire-front time-lapse: synced to SUB-DAILY scrubber hour when provided, else loops 0 -> 6 h.
   const badgeRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const map = mapRef.current;
@@ -748,7 +714,21 @@ export function EmberMap({
       setData(map, "ember-spread-live", EMPTY);
       badge.style.display = "none";
     };
-    if (!spreadWinds?.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return clear();
+    if (!spreadWinds?.length) return clear();
+
+    if (typeof spreadPreviewHour === "number" && Number.isFinite(spreadPreviewHour)) {
+      const h = Math.max(0.05, spreadPreviewHour);
+      const features = spreadWinds.flatMap((f) => {
+        const e = spreadEllipse(f.lat, f.lng, f.hourly, h);
+        return e ? [{ type: "Feature" as const, geometry: e.polygon, properties: {} }] : [];
+      });
+      setData(map, "ember-spread-live", { type: "FeatureCollection", features });
+      badge.style.display = "block";
+      badge.textContent = `🔥 Fire front  +${h.toFixed(1)} h`;
+      return clear;
+    }
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return clear();
     badge.style.display = "block";
     const CYCLE = 7_000, GROW = 6_000, HOURS = 6;
     const start = performance.now();
@@ -770,7 +750,7 @@ export function EmberMap({
       cancelAnimationFrame(raf);
       clear();
     };
-  }, [spreadWinds, styleVersion]);
+  }, [spreadWinds, spreadPreviewHour, styleVersion]);
 
   // Wind speed as a smooth coloured layer over the whole planet (Web Mercator image, under the place labels).
   useEffect(() => {
@@ -935,7 +915,7 @@ export function EmberMap({
           display: "none",
           position: "absolute",
           left: "50%",
-          bottom: "14px",
+          bottom: "42px",
           transform: "translateX(-50%)",
           padding: "5px 11px",
           borderRadius: "999px",

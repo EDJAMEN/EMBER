@@ -343,10 +343,499 @@
 .ember-timeline-chart { min-width: 0; }
 .ember-timeline-chart input { min-width: 0; }
 .ember-timeline-label > span:first-child { display: flex; align-items: center; gap: 6px; }
-.ember-timeline-live { width: 5px; height: 5px; border-radius: var(--radius-pill); background: var(--ember-coral); }
+.ember-timeline-live { width: 6px; height: 6px; border-radius: var(--radius-pill); background: #EA580C; box-shadow: 0 0 0 2px rgb(234 88 12 / 18%); }
+.ember-timeline-live.historical { background: #d97706; box-shadow: 0 0 0 2px rgb(217 119 6 / 22%); }
 .ember-timeline-date { color: var(--muted-foreground); font-size: 7px; font-weight: 500; }
-.ember-time-mark { grid-row: 2; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 7px; }
-.ember-play-button { width: 29px; height: 29px; border-radius: var(--radius-control); }
+.ember-time-mark { grid-row: 2; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; white-space: nowrap; }
+.ember-play-button { width: 30px; height: 30px; border-radius: var(--radius-control); flex: 0 0 auto; }
+
+/* Two-tier Historical Fire Map Navigator (warm #FBF9F5 light mode / #1C1917 text / #EA580C terracotta accents) */
+.ember-timeline-nav {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #e7e1d6;
+  border-top: 0;
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+  background: #fbf9f5;
+  color: #1c1917;
+  padding: 11px 16px 13px;
+}
+.dark .ember-timeline-nav {
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--foreground);
+}
+.ember-nav-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ember-nav-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.ember-nav-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.ember-horizon-pills,
+.ember-nav-granularity {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #e5ded1;
+  border-radius: 7px;
+  background: #f3efe6;
+  padding: 2px;
+  gap: 2px;
+}
+.dark .ember-horizon-pills,
+.dark .ember-nav-granularity {
+  border-color: var(--border);
+  background: var(--secondary);
+}
+.ember-horizon-pills button,
+.ember-nav-granularity button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 4px 9px;
+  color: #57534e;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.14s, color 0.14s;
+}
+.dark .ember-horizon-pills button,
+.dark .ember-nav-granularity button {
+  color: var(--muted-foreground);
+}
+.ember-horizon-pills button.active,
+.ember-nav-granularity button.active {
+  background: #ea580c;
+  color: #ffffff;
+}
+.ember-nav-granularity button {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+}
+.ember-info-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.ember-info-btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid #e5ded1;
+  border-radius: 999px;
+  background: #f3efe6;
+  color: #78716c;
+  cursor: pointer;
+}
+.dark .ember-info-btn {
+  border-color: var(--border);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+}
+.ember-info-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(270px, 75vw);
+  border: 1px solid #e5ded1;
+  border-radius: 8px;
+  background: #fbf9f5;
+  padding: 9px 11px;
+  color: #1c1917;
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 10px 26px rgb(28 25 23 / 14%);
+}
+.dark .ember-info-popover {
+  border-color: var(--border);
+  background: var(--popover);
+  color: var(--popover-foreground);
+}
+.ember-info-popover strong {
+  display: block;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+.ember-info-popover p {
+  margin: 0;
+  color: #57534e;
+}
+.dark .ember-info-popover p {
+  color: var(--muted-foreground);
+}
+.ember-nav-archive-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.ember-date-picker-label,
+.ember-span-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid #dfd7c8;
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 0 9px;
+  color: #1c1917;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.dark .ember-date-picker-label,
+.dark .ember-span-select-wrap {
+  border-color: var(--border);
+  background: var(--secondary);
+  color: var(--foreground);
+}
+.ember-date-picker-label input[type="date"] {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+}
+.ember-date-formatted {
+  display: none;
+}
+.ember-span-select-wrap select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  outline: none;
+  cursor: pointer;
+}
+.ember-cal-icon {
+  color: #ea580c;
+  flex: 0 0 auto;
+}
+.ember-nav-banners {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.ember-historical-badge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgb(234 88 12 / 35%);
+  border-radius: 999px;
+  background: rgb(234 88 12 / 10%);
+  padding: 3px 5px 3px 9px;
+  color: #9a3412;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+.dark .ember-historical-badge {
+  color: #fdba74;
+  background: rgb(234 88 12 / 18%);
+}
+.ember-pulse-amber {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgb(245 158 11 / 25%);
+  animation: ember-pulse 1.6s ease-in-out infinite;
+}
+@keyframes ember-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.25); opacity: 0.72; }
+}
+.ember-back-live-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 999px;
+  background: #ea580c;
+  padding: 3px 8px;
+  color: #ffffff;
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ember-era-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #d6cec0;
+  border-radius: 999px;
+  background: #f3efe6;
+  padding: 3px 9px;
+  color: #57534e;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.dark .ember-era-badge {
+  border-color: var(--border);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+}
+.ember-nav-scrubber {
+  display: grid;
+  gap: 6px;
+}
+.ember-scrubber-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ember-scrubber-active-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: #1c1917;
+}
+.dark .ember-scrubber-active-label {
+  color: var(--foreground);
+}
+.ember-scrubber-pass-badge {
+  border-radius: 999px;
+  background: rgb(234 88 12 / 12%);
+  padding: 2px 8px;
+  color: #c2410c;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.dark .ember-scrubber-pass-badge {
+  color: #fdba74;
+}
+.ember-scrubber-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+.ember-scrubber-row .ember-time-mark {
+  padding-top: 4px;
+  font-size: 9.5px;
+  color: #78716c;
+}
+.dark .ember-scrubber-row .ember-time-mark {
+  color: var(--muted-foreground);
+}
+.ember-scrubber-track-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 15px;
+}
+.ember-scrubber-input {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  appearance: none;
+  outline: none;
+  cursor: pointer;
+}
+.ember-scrubber-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #ea580c;
+  border: 2.5px solid #fbf9f5;
+  box-shadow: 0 1px 5px rgb(28 25 23 / 30%);
+  cursor: grab;
+}
+.ember-scrubber-input::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #ea580c;
+  border: 2.5px solid #fbf9f5;
+  box-shadow: 0 1px 5px rgb(28 25 23 / 30%);
+  cursor: grab;
+}
+.ember-scrubber-ticks {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 15px;
+  height: 14px;
+  pointer-events: none;
+}
+.ember-scrubber-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+.ember-scrubber-tick i {
+  width: 1px;
+  height: 4px;
+  background: #a8a29e;
+}
+.ember-scrubber-tick b {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 500;
+  color: #78716c;
+  white-space: nowrap;
+}
+.ember-scrubber-tick.current i {
+  background: #ea580c;
+  height: 6px;
+}
+.ember-scrubber-tick.current b {
+  color: #ea580c;
+  font-weight: 700;
+}
+.ember-play-terracotta {
+  border-color: #dfd7c8;
+  color: #ea580c;
+  background: #ffffff;
+}
+.dark .ember-play-terracotta {
+  border-color: var(--border);
+  background: var(--secondary);
+}
+
+/* Harmonized vs Unharmonized Comparison Top Strip (outside the map) */
+.ember-harmonize-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: color-mix(in oklab, var(--card) 92%, #ea580c 8%);
+}
+.ember-harmonize-bar-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.ember-harmonize-bar-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+.ember-harmonize-bar-info p {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+}
+.ember-harmonize-delta {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(234, 88, 12, 0.14);
+  color: #ea580c;
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+.ember-harmonize-bar-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(195px, 1fr));
+  gap: 8px;
+  flex: 0 1 auto;
+}
+.ember-harmonize-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 7px 11px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--card);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.ember-harmonize-card:hover {
+  border-color: rgba(234, 88, 12, 0.45);
+}
+.ember-harmonize-card.active {
+  border-color: #ea580c;
+  background: rgba(234, 88, 12, 0.09);
+  box-shadow: 0 0 0 1px rgba(234, 88, 12, 0.25);
+}
+.ember-harmonize-card small {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--muted-foreground);
+}
+.ember-harmonize-card.active small {
+  color: #ea580c;
+}
+.ember-harmonize-card-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+}
+.ember-harmonize-card strong {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+.ember-harmonize-card span {
+  font-size: 10px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 680px) {
+  .ember-harmonize-bar-actions {
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+  }
+}
 .ember-bottom-strip { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 11px 1px; }
 .ember-bottom-strip > div:first-child, .ember-bottom-right, .ember-bottom-right > span { display: flex; align-items: center; }
 .ember-bottom-strip > div:first-child { gap: 9px; }
