@@ -338,11 +338,13 @@ export function EmberDashboard() {
           </h1>
           <p>Here’s the latest across your monitored region.</p>
         </div>
-        <Button variant="outline" className="ember-export-button" asChild>
-          <Link href="/detections">
-            <Radio size={15} /> Export briefing
-          </Link>
-        </Button>
+        <div className="ember-page-actions">
+          <Button variant="outline" className="ember-export-button" asChild>
+            <Link href="/detections">
+              <Radio size={15} /> Export briefing
+            </Link>
+          </Button>
+        </div>
       </section>
 
       <section className="ember-stat-grid" aria-label="Monitoring summary">
@@ -417,6 +419,7 @@ export function EmberDashboard() {
             <p>{regionLabel}</p>
           </div>
           <div className="ember-map-heading-actions">
+            <div className="ember-map-control-group">
             <div className="ember-window-selector" role="radiogroup" aria-label="Map view">
               {(
                 [
@@ -457,9 +460,12 @@ export function EmberDashboard() {
                 </button>
               ))}
             </div>
+            </div>
+            <div className="ember-map-control-group">
             <Button
               variant="outline"
               size="sm"
+              className="ember-layer-button"
               aria-label={`Location: ${focusPlace?.name ?? "Bukidnon region"}. Search a place`}
               title="Search a place"
               onClick={() => {
@@ -524,6 +530,7 @@ export function EmberDashboard() {
             >
               <SlidersHorizontal size={14} /> Layers
             </Button>
+            </div>
           </div>
         </div>
         <div className="ember-map-layout">
@@ -619,7 +626,7 @@ export function EmberDashboard() {
               className="ember-fullscreen"
               aria-label="Expand map"
               onClick={() =>
-                document.querySelector(".ember-map-canvas")?.classList.toggle("map-expanded")
+                document.querySelector(".ember-map-section .ember-map-layout")?.classList.toggle("map-expanded")
               }
             >
               <Maximize2 size={15} />
@@ -883,7 +890,7 @@ export function EmberDashboard() {
               <span className="ember-timeline-live" /> 7-DAY TIMELINE
             </span>
             <span className="ember-timeline-date">
-              {dayCursor === 0 ? "Today (Live)" : `${Math.abs(dayCursor)}d ago`}
+              {dayCursor === 0 ? "Today" : `${Math.abs(dayCursor)}d ago`}
             </span>
           </div>
           <div
@@ -901,7 +908,7 @@ export function EmberDashboard() {
               aria-label="Detection timeline day"
               style={{ flex: 1, accentColor: "var(--primary)" }}
             />
-            <span className="ember-time-mark">Live</span>
+            <span className="ember-time-mark">Now</span>
           </div>
           <Button
             variant="outline"
@@ -922,20 +929,17 @@ export function EmberDashboard() {
             <Flame size={16} />
           </span>
           <span>
-            <b>{live ? "Live NASA FIRMS detections" : "Illustrative sample detections"}</b>
+            <b>{live ? "Live NASA FIRMS detections" : "Bukidnon detections"}</b>
             <small>
               {live
                 ? firmsQuery.isError
                   ? "Live feed failed, showing sample data"
                   : `${firmsQuery.data?.rawCount ?? 0} live detections · ${place ? `~55 km around ${place.name}` : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
-                : "Live NASA FIRMS feed is not connected"}
+                : `${visibleHotspots.length} clusters · closest settlement ${closest.toFixed(1)} km`}
             </small>
           </span>
         </div>
         <div className="ember-bottom-right">
-          <span>
-            <span className="ember-pulse-dot" /> Demo environment
-          </span>
           <button aria-label="More system status">
             <MoreHorizontal size={17} />
           </button>
