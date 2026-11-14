@@ -22,6 +22,19 @@ export type EmberMapIncident = {
 
 export type EmberMapInstance = maplibregl.Map;
 
+export interface EmberMapLayers {
+  blueMarble: boolean;
+  countryBorders: boolean;
+  firmsWms: boolean;
+  clusteredHotspots: boolean;
+}
+
+const BLUE_MARBLE_URL =
+  "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_NextGeneration/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg";
+
+const NATURAL_EARTH_COUNTRIES_URL =
+  "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson";
+
 const SEVERITY_COLOR: Record<string, string> = {
   critical: "#e2481f",
   high: "#e86a1f",
@@ -106,7 +119,71 @@ function addEmberLayers(map: maplibregl.Map, dark: boolean) {
     source: "ember-footprints",
     paint: { "line-color": ["get", "color"], "line-width": ["case", ["get", "sel"], 2, 1], "line-opacity": 0.8 },
   });
+  if (map.getSource("openmaptiles")) addLandmarkLayers(map, dark);
 }
+
+// Landmarks worth naming at street level; emergency services first since EMBER is a fire tool.
+const EMERGENCY = ["hospital", "fire_station", "police"];
+const LANDMARK_CLASSES = [
+  ...EMERGENCY,
+  "town_hall", "school", "college", "place_of_worship", "museum", "attraction", "castle", "monument",
+  "stadium", "library", "theatre", "cinema", "art_gallery", "zoo", "park", "railway", "harbor",
+];
+const LANDMARK_MINZOOM = 15; // only once you've zoomed in far enough to see the 3D structures
+
+/** Named landmarks (OpenMapTiles `poi`): a dot at the exact spot + its name, only at street-level zoom. */
+function addLandmarkLayers(map: maplibregl.Map, dark: boolean) {
+  const filter: maplibregl.FilterSpecification = [
+    "all",
+    ["has", "name"],
+    ["in", ["get", "class"], ["literal", LANDMARK_CLASSES]],
+  ];
+  const color: ExpressionSpecification = [
+    "case",
+    ["in", ["get", "class"], ["literal", EMERGENCY]], "#e2481f",
+    ["in", ["get", "class"], ["literal", ["park", "zoo"]]], "#3c9d5d",
+    "#2f6fde",
+  ];
+  map.addLayer({
+    id: "ember-landmarks-dot",
+    type: "circle",
+    source: "openmaptiles",
+    "source-layer": "poi",
+    minzoom: LANDMARK_MINZOOM,
+    filter,
+    paint: {
+      "circle-color": color,
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], LANDMARK_MINZOOM, 3.5, 18, 6],
+      "circle-stroke-color": dark ? "#111" : "#fff",
+      "circle-stroke-width": 1.5,
+      "circle-pitch-alignment": "viewport", // stays a round dot when the camera tilts
+    },
+  });
+  map.addLayer({
+    id: "ember-landmarks-label",
+    type: "symbol",
+    source: "openmaptiles",
+    "source-layer": "poi",
+    minzoom: LANDMARK_MINZOOM,
+    filter,
+    layout: {
+      "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], LANDMARK_MINZOOM, 10, 18, 13],
+      "text-anchor": "top",
+      "text-offset": [0, 0.7],
+      "text-max-width": 9,
+      "symbol-sort-key": ["coalesce", ["get", "rank"], 99], // most notable landmarks win label collisions
+    },
+    paint: {
+      "text-color": dark ? "#e8e6e1" : "#2b2b2b",
+      "text-halo-color": dark ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.9)",
+      "text-halo-width": 1.4,
+    },
+  });
+}
+
+const titleCase = (s: string) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 const setData = (map: maplibregl.Map, id: string, data: FeatureCollection) =>
   (map.getSource(id) as GeoJSONSource | undefined)?.setData(data);
@@ -134,6 +211,10 @@ export function EmberMap({
   onMapClick,
   areas,
   projection = "globe",
+  layers = { blueMarble: true, countryBorders: true, firmsWms: true, clusteredHotspots: true },
+  showViirs = true,
+  showModis = true,
+  onBoundsChange,
 }: {
   projection?: "globe" | "mercator"; // map view: 3D globe or flat map
   incidents: EmberMapIncident[];
@@ -144,6 +225,10 @@ export function EmberMap({
   focus?: { lat: number; lng: number; label: string } | null; // picked place: fly there + pin
   onMapClick?: (lat: number, lng: number) => void;
   areas?: FeatureCollection<MultiPolygon, { color: string; label: string }> | null; // temperature / heat-index contours
+  layers?: EmberMapLayers;
+  showViirs?: boolean;
+  showModis?: boolean;
+  onBoundsChange?: (bbox: [number, number, number, number]) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -157,6 +242,8 @@ export function EmberMap({
   readyRef.current = onReady;
   const darkRef = useRef(dark);
   const projectionRef = useRef(projection);
+  const boundsChangeRef = useRef(onBoundsChange);
+  boundsChangeRef.current = onBoundsChange;
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const pinRef = useRef<{ marker: maplibregl.Marker; label: HTMLSpanElement } | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -196,7 +283,7 @@ export function EmberMap({
       hoveredId = undefined;
     };
     map.on("mousemove", (e) => {
-      const layers = ["ember-areas-fill", "ember-boundary-fill"].filter((id) => map.getLayer(id));
+      const layers = ["ember-landmarks-dot", "ember-areas-fill", "ember-boundary-fill"].filter((id) => map.getLayer(id));
       const top: MapGeoJSONFeature | undefined = map.queryRenderedFeatures(e.point, { layers })[0];
       clearHover();
       if (!top) return void popup.remove();
@@ -204,7 +291,11 @@ export function EmberMap({
         hoveredId = top.id;
         map.setFeatureState({ source: "ember-boundary", id: hoveredId }, { hover: true });
       }
-      popup.setLngLat(e.lngLat).setText(String(top.properties.label ?? top.properties.name ?? "")).addTo(map);
+      const text =
+        top.layer.id === "ember-landmarks-dot"
+          ? `${top.properties["name:en"] ?? top.properties.name} · ${titleCase(String(top.properties.subclass ?? top.properties.class ?? "landmark"))}`
+          : String(top.properties.label ?? top.properties.name ?? "");
+      popup.setLngLat(e.lngLat).setText(text).addTo(map);
     });
     map.on("mouseout", () => {
       clearHover();
@@ -216,8 +307,21 @@ export function EmberMap({
       clickRef.current?.(lat, lng);
     });
 
+    let boundsTimer: ReturnType<typeof setTimeout> | null = null;
+    const emitBounds = () => {
+      if (boundsTimer) clearTimeout(boundsTimer);
+      boundsTimer = setTimeout(() => {
+        if (map.getZoom() < 3.5) return;
+        const b = map.getBounds();
+        boundsChangeRef.current?.([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]);
+      }, 450);
+    };
+    map.on("moveend", emitBounds);
+
     readyRef.current?.(map);
     return () => {
+      if (boundsTimer) clearTimeout(boundsTimer);
+      map.off("moveend", emitBounds);
       map.remove();
       mapRef.current = null;
     };
@@ -300,11 +404,110 @@ export function EmberMap({
     });
   }, [incidents, selected, styleVersion]);
 
+  // NASA GIBS Blue Marble, Natural Earth Country Borders, and FIRMS WMS Raster layers
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || styleVersion === 0) return;
+
+    const styleLayers = map.getStyle()?.layers ?? [];
+    for (const lyr of styleLayers) {
+      if (
+        lyr.id.startsWith("ember-") ||
+        lyr.id.startsWith("nasa-") ||
+        lyr.id.startsWith("natural-earth-")
+      ) {
+        continue;
+      }
+      if (lyr.type === "background" || lyr.type === "fill") {
+        map.setLayoutProperty(lyr.id, "visibility", layers.blueMarble ? "none" : "visible");
+      }
+    }
+
+    if (!map.getSource("nasa-gibs-bluemarble")) {
+      map.addSource("nasa-gibs-bluemarble", {
+        type: "raster",
+        tiles: [BLUE_MARBLE_URL],
+        tileSize: 256,
+        maxzoom: 8,
+      });
+      // Under the basemap's place/road labels (satellite + names, like a hybrid map) and therefore under the
+      // 3D buildings and EMBER's data layers; fall back to those if the style has no labels.
+      const firstBaseLabel = styleLayers.find((l) => l.type === "symbol" && !l.id.startsWith("ember-"))?.id;
+      const beforeBoundary = [firstBaseLabel, "ember-buildings-3d", "ember-boundary-fill"].find(
+        (id): id is string => !!id && !!map.getLayer(id),
+      );
+      map.addLayer(
+        {
+          id: "nasa-gibs-bluemarble-layer",
+          type: "raster",
+          source: "nasa-gibs-bluemarble",
+          layout: { visibility: layers.blueMarble ? "visible" : "none" },
+        },
+        beforeBoundary,
+      );
+    } else if (map.getLayer("nasa-gibs-bluemarble-layer")) {
+      map.setLayoutProperty(
+        "nasa-gibs-bluemarble-layer",
+        "visibility",
+        layers.blueMarble ? "visible" : "none",
+      );
+    }
+
+    if (!map.getSource("natural-earth-borders")) {
+      map.addSource("natural-earth-borders", {
+        type: "geojson",
+        data: NATURAL_EARTH_COUNTRIES_URL,
+      });
+      map.addLayer({
+        id: "natural-earth-borders-layer",
+        type: "line",
+        source: "natural-earth-borders",
+        paint: {
+          "line-color": "#b0b7c3",
+          "line-width": 1,
+          "line-opacity": 0.9,
+        },
+        layout: { visibility: layers.countryBorders ? "visible" : "none" },
+      });
+    } else if (map.getLayer("natural-earth-borders-layer")) {
+      map.setLayoutProperty(
+        "natural-earth-borders-layer",
+        "visibility",
+        layers.countryBorders ? "visible" : "none",
+      );
+    }
+
+    const activeWmsLayers: string[] = [];
+    if (showViirs) activeWmsLayers.push("fires_viirs_24");
+    if (showModis) activeWmsLayers.push("fires_modis_24");
+    if (showViirs) activeWmsLayers.push("fires_landsat_24");
+
+    if (map.getLayer("nasa-firms-wms-layer")) map.removeLayer("nasa-firms-wms-layer");
+    if (map.getSource("nasa-firms-wms")) map.removeSource("nasa-firms-wms");
+
+    if (layers.firmsWms && activeWmsLayers.length > 0) {
+      map.addSource("nasa-firms-wms", {
+        type: "raster",
+        tiles: [
+          `/api/firms/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=${activeWmsLayers.join(",")}&FORMAT=image/png&TRANSPARENT=true&SRS=EPSG:3857&WIDTH=256&HEIGHT=256&BBOX={bbox-epsg-3857}`,
+        ],
+        tileSize: 256,
+      });
+      map.addLayer({
+        id: "nasa-firms-wms-layer",
+        type: "raster",
+        source: "nasa-firms-wms",
+      });
+    }
+  }, [styleVersion, layers.blueMarble, layers.countryBorders, layers.firmsWms, showViirs, showModis]);
+
   // Fire clusters: glowing count markers (DOM, unaffected by style reloads).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     markersRef.current.forEach((m) => m.remove());
+    markersRef.current = [];
+    if (!layers.clusteredHotspots) return;
     markersRef.current = incidents.map((incident, index) => {
       const el = document.createElement("div");
       el.className = "ember-marker";
@@ -323,9 +526,8 @@ export function EmberMap({
     const current = incidents[selected];
     const selectionChanged = prevSelectedRef.current !== selected;
     prevSelectedRef.current = selected;
-    // With a picked place, only pan when the user picks an incident; new data alone shouldn't drag the map off the place.
-    if (current && (selectionChanged || !focusRef.current)) map.panTo([current.lng, current.lat]);
-  }, [incidents, selected]);
+    if (current && selectionChanged) map.panTo([current.lng, current.lat]);
+  }, [incidents, selected, layers.clusteredHotspots]);
 
   // Picked place: fly there (slow descent from the globe) and drop a labelled pin.
   const focusLat = focus?.lat;

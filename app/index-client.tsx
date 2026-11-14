@@ -12,6 +12,8 @@ import {
   ChevronRight,
   Droplets,
   Globe,
+  Layers,
+  Satellite,
   Map as MapIcon,
   Flame,
   LocateFixed,
@@ -34,18 +36,22 @@ import { Button } from "@/components/ui/button";
 const EmberMap = dynamic(() => import("@/components/ember-map").then((m) => m.EmberMap), {
   ssr: false,
 });
-import { EmberShell } from "@/components/ember-shell";
 import { SmartActionGuide } from "@/components/smart-action-guide";
 import { PlaceCombobox } from "@/components/place-combobox";
-import { DEFAULT_PLACE, firmsKey, type GuidePlace } from "@/lib/geocode";
+import { DEFAULT_PLACE, type GuidePlace } from "@/lib/geocode";
 import { conditionsKey, fetchConditions } from "@/lib/conditions";
 import { heatIndexC, heatLevel } from "@/lib/action-guide";
 import { contourAreas, fetchHeatGrid, gridDomain } from "@/lib/heat-grid";
 import { ClimatePanel, HeatScaleSlider } from "@/components/climate-panel";
 import { useTheme } from "@/hooks/use-theme";
 import { HOTSPOTS, type Confidence, type Hotspot } from "@/lib/hotspots";
-import { fetchFirmsHotspots } from "@/lib/firms-client";
-import type { EmberMapInstance } from "@/components/ember-map";
+import { EmberShell, type EmberLiveStatus } from "@/components/ember-shell";
+import type { EmberMapInstance, EmberMapLayers } from "@/components/ember-map";
+import {
+  clusterHotspots,
+  fetchFirmsWfsHotspots,
+  type ClusteredHotspot,
+} from "@/lib/firms-client";
 
 const NO_HOTSPOTS: Hotspot[] = []; // stable empty list so memoized map data doesn't change every render
 
@@ -55,12 +61,13 @@ const VIEWS: OverviewView[] = ["fires", "temperature", "heatindex"];
 const MAP_SEARCH_ID = "ember-map-search-input";
 const OVERVIEW_STORAGE_KEY = "ember.overview.v1";
 
-function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView?: MapView } {
+function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView?: MapView; realistic?: boolean } {
   try {
     const saved = JSON.parse(localStorage.getItem(OVERVIEW_STORAGE_KEY) ?? "null") as {
       place?: Partial<GuidePlace> | null;
       view?: unknown;
       mapView?: unknown;
+      realistic?: unknown;
     } | null;
     const p = saved?.place;
     const validPlace =
@@ -75,6 +82,7 @@ function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView
       place: validPlace ? (p as GuidePlace) : undefined,
       view: VIEWS.includes(saved?.view as OverviewView) ? (saved!.view as OverviewView) : undefined,
       mapView: saved?.mapView === "globe" || saved?.mapView === "mercator" ? saved.mapView : undefined,
+      realistic: typeof saved?.realistic === "boolean" ? saved.realistic : undefined,
     };
   } catch {
     return {};
@@ -103,6 +111,13 @@ export function EmberDashboard() {
   const [place, setPlace] = useState<GuidePlace | null>(null);
   const [view, setView] = useState<OverviewView>("fires");
   const [mapView, setMapView] = useState<MapView>("globe");
+  // blueMarble on = "Realistic" (NASA GIBS satellite imagery); off = "Normal" vector basemap.
+  const [layers, setLayers] = useState<EmberMapLayers>({
+    blueMarble: false,
+    countryBorders: true,
+    firmsWms: true,
+    clusteredHotspots: true,
+  });
   const [restored, setRestored] = useState(false);
   const handleLocate = useCallback((place: GuidePlace) => {
     setPlace(place);
@@ -116,16 +131,20 @@ export function EmberDashboard() {
     if (saved.place) handleLocate(saved.place);
     if (saved.view) setView(saved.view);
     if (saved.mapView) setMapView(saved.mapView);
+    if (saved.realistic !== undefined) setLayers((prev) => ({ ...prev, blueMarble: saved.realistic! }));
     setRestored(true);
   }, [handleLocate]);
   useEffect(() => {
     if (!restored) return;
     try {
-      localStorage.setItem(OVERVIEW_STORAGE_KEY, JSON.stringify({ place, view, mapView }));
+      localStorage.setItem(
+        OVERVIEW_STORAGE_KEY,
+        JSON.stringify({ place, view, mapView, realistic: layers.blueMarble }),
+      );
     } catch {
       // storage blocked (private mode etc.) — the page still works, it just won't remember
     }
-  }, [place, view, mapView, restored]);
+  }, [place, view, mapView, layers.blueMarble, restored]);
 
   const climate = view !== "fires"; // temperature or heat-index view
   const focusPlace = place ?? (climate ? DEFAULT_PLACE : null);
@@ -172,19 +191,20 @@ export function EmberDashboard() {
   const [dayCursor, setDayCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [live, setLive] = useState(false);
+  const [bbox, setBbox] = useState<[number, number, number, number]>([7.3, 124.5, 8.6, 125.5]);
+  const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
+  const effectiveBbox: [number, number, number, number] = place
+    ? [place.lat - 0.5, place.lng - 0.5, place.lat + 0.5, place.lng + 0.5]
+    : bbox;
+  const bboxKey = effectiveBbox.map((n) => n.toFixed(2)).join(",");
   const firmsQuery = useQuery({
-    queryKey: firmsKey(place), // same key as the action guide, so one request per place
-    queryFn: () => fetchFirmsHotspots(place ?? undefined),
+    queryKey: ["firms-wfs", wfsWindow, bboxKey],
+    queryFn: () => fetchFirmsWfsHotspots({ bbox: effectiveBbox, window: wfsWindow }),
     enabled: live,
-    staleTime: 10 * 60 * 1000,
+    staleTime: 2 * 60 * 1000,
     retry: 1,
   });
-  // A searched place shows its real result, even when it has zero fires; only the default region falls back to samples.
-  const baseHotspots = place
-    ? (firmsQuery.data ?? NO_HOTSPOTS)
-    : live && firmsQuery.data?.length
-      ? firmsQuery.data
-      : HOTSPOTS;
+  const isLiveFeedActive = live && Boolean(firmsQuery.data);
   const regionLabel = place ? [place.name, place.region].filter(Boolean).join(" · ") : "Bukidnon, Mindanao · Philippines";
   const [selectedId, setSelectedId] = useState<number>(HOTSPOTS[0]?.id ?? 0);
   const [selectedLayer, setSelectedLayer] = useState("Thermal anomalies");
@@ -205,26 +225,33 @@ export function EmberDashboard() {
     return () => clearInterval(timer);
   }, [playing]);
 
-  const visibleHotspots = useMemo(
-    () =>
-      baseHotspots.filter((hotspot) => {
-        if (confidence !== "all" && hotspot.confidence !== confidence) return false;
-        // Fused clusters stay visible while any of their contributing sensors is shown.
-        const sensors = hotspot.sources ?? [hotspot.source];
-        if (!sensors.some((s) => (s === "VIIRS" ? showViirs : showModis))) return false;
-        if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
-        const query = search.toLowerCase();
-        if (
-          query &&
-          !`${hotspot.name} ${hotspot.settlement} ${hotspot.municipality}`
-            .toLowerCase()
-            .includes(query)
-        )
-          return false;
-        return true;
-      }),
-    [confidence, showViirs, showModis, dayCursor, search, baseHotspots],
-  );
+  const visibleHotspots: ClusteredHotspot[] = useMemo(() => {
+    const query = search.toLowerCase();
+    const matchesFilter = (hotspot: Hotspot) => {
+      if (confidence !== "all" && hotspot.confidence !== confidence) return false;
+      const sensors = hotspot.sources ?? [hotspot.source];
+      if (!sensors.some((s) => (s === "VIIRS" ? showViirs : showModis))) return false;
+      if (hotspot.dayOffset > dayCursor || hotspot.dayOffset < dayCursor - 1) return false;
+      if (
+        query &&
+        !`${hotspot.name} ${hotspot.settlement} ${hotspot.municipality}`
+          .toLowerCase()
+          .includes(query)
+      )
+        return false;
+      return true;
+    };
+
+    if (isLiveFeedActive && firmsQuery.data) {
+      return clusterHotspots(firmsQuery.data.data.filter(matchesFilter));
+    }
+
+    const fallback = place ? NO_HOTSPOTS : HOTSPOTS;
+    return fallback.filter(matchesFilter).map((h) => ({
+      ...h,
+      highConfidenceCount: h.confidence === "high" ? 1 : 0,
+    }));
+  }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data, place]);
 
   // Memoized: a new array every render would re-run the map's marker/pan effect and cut off fly-to animations.
   const mapIncidents = useMemo(
@@ -251,15 +278,41 @@ export function EmberDashboard() {
         : focusPlace.name;
   const selectedHotspot = visibleHotspots.find((h) => h.id === selectedId) ?? visibleHotspots[0];
   const selectedIndex = selectedHotspot ? visibleHotspots.indexOf(selectedHotspot) : 0;
-  const activeCount = visibleHotspots.length;
-  const highCount = visibleHotspots.filter((h) => h.confidence === "high").length;
+  const activeCount = isLiveFeedActive
+    ? visibleHotspots.reduce((sum, h) => sum + h.count, 0)
+    : visibleHotspots.length;
+  const highCount = isLiveFeedActive
+    ? visibleHotspots.reduce((sum, h) => sum + h.highConfidenceCount, 0)
+    : visibleHotspots.filter((h) => h.confidence === "high").length;
   const closest = visibleHotspots.reduce(
     (min, h) => Math.min(min, h.proximityKm),
     visibleHotspots[0]?.proximityKm ?? 0,
   );
 
+  const liveStatus: EmberLiveStatus = useMemo(() => {
+    if (!live) return { mode: "sample", state: "idle" };
+    if (firmsQuery.isFetching) return { mode: "live", state: "loading" };
+    if (firmsQuery.isError) {
+      return {
+        mode: "live",
+        state: "error",
+        errorMessage: firmsQuery.error instanceof Error ? firmsQuery.error.message : "Sync failed",
+      };
+    }
+    const fetchedAt = firmsQuery.data?.fetchedAt;
+    const formattedTime = fetchedAt
+      ? new Date(fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : undefined;
+    return {
+      mode: "live",
+      state: firmsQuery.data ? "synced" : "idle",
+      lastSync: formattedTime,
+      region: firmsQuery.data?.region,
+    };
+  }, [live, firmsQuery.isFetching, firmsQuery.isError, firmsQuery.error, firmsQuery.data]);
+
   return (
-    <EmberShell active="overview" title="Overview">
+    <EmberShell active="overview" title="Overview" liveStatus={liveStatus}>
       <section className="ember-page-heading">
         <div>
           <div className="ember-eyebrow">
@@ -369,6 +422,26 @@ export function EmberDashboard() {
                 </button>
               ))}
             </div>
+            <div className="ember-window-selector" role="radiogroup" aria-label="Map style">
+              {(
+                [
+                  [false, "NORMAL", Layers, "Normal map: streets, labels and 3D buildings"],
+                  [true, "REALISTIC", Satellite, "Realistic: NASA GIBS Blue Marble satellite imagery"],
+                ] as const
+              ).map(([realistic, label, Icon, title]) => (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={layers.blueMarble === realistic}
+                  key={label}
+                  className={layers.blueMarble === realistic ? "selected" : ""}
+                  onClick={() => setLayers((prev) => ({ ...prev, blueMarble: realistic }))}
+                  title={title}
+                >
+                  <Icon size={12} style={{ display: "inline", verticalAlign: "-2px" }} /> {label}
+                </button>
+              ))}
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -453,6 +526,10 @@ export function EmberDashboard() {
               }}
               dark={dark}
               onReady={handleMapReady}
+              layers={layers}
+              showViirs={showViirs}
+              showModis={showModis}
+              onBoundsChange={setBbox}
               projection={mapView}
               focus={focusPlace ? { lat: focusPlace.lat, lng: focusPlace.lng, label: pinLabel } : null}
               areas={climate ? (contours?.areas ?? null) : null}
@@ -539,6 +616,32 @@ export function EmberDashboard() {
                     <X size={14} />
                   </button>
                 </div>
+                {(
+                  [
+                    { key: "blueMarble", label: "Blue Marble" },
+                    { key: "countryBorders", label: "Country Borders" },
+                    { key: "firmsWms", label: "FIRMS WMS Raster Dots" },
+                    { key: "clusteredHotspots", label: "Clustered Hotspots" },
+                  ] as const
+                ).map((item) => {
+                  const checked = layers[item.key];
+                  return (
+                    <button
+                      type="button"
+                      className="ember-layer-option"
+                      key={item.key}
+                      aria-pressed={checked}
+                      onClick={() =>
+                        setLayers((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                      }
+                    >
+                      <span>{item.label}</span>
+                      <span className={`ember-layer-check ${checked ? "checked" : ""}`}>
+                        {checked && <Check size={12} />}
+                      </span>
+                    </button>
+                  );
+                })}
                 {["Thermal anomalies", "Settlement proximity", "Detection heatmap"].map((layer) => (
                   <button
                     type="button"
@@ -807,7 +910,7 @@ export function EmberDashboard() {
               {live
                 ? firmsQuery.isError
                   ? "Live feed failed, showing sample data"
-                  : `${firmsQuery.data?.length ?? 0} live clusters · ${place ? `~55 km around ${place.name}` : "Bukidnon bbox"}`
+                  : `${firmsQuery.data?.rawCount ?? 0} live detections · ${place ? `~55 km around ${place.name}` : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
                 : "Live NASA FIRMS feed is not connected"}
             </small>
           </span>
