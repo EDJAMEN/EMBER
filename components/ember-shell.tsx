@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Bell,
+  CalendarDays,
   ChevronDown,
   ChevronRight,
   CircleHelp,
@@ -22,13 +23,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 
-export type EmberNavKey = "overview" | "detections" | "alerts" | "analytics" | "ingestion";
+export type EmberNavKey = "overview" | "detections" | "alerts" | "analytics" | "calendar" | "ingestion";
 
 const NAV: Array<{ key: EmberNavKey; to: string; label: string; icon: typeof Flame }> = [
   { key: "overview", to: "/", label: "Overview", icon: LayoutGrid },
   { key: "detections", to: "/detections", label: "Detections", icon: Radio },
   { key: "alerts", to: "/alerts", label: "Alerts", icon: TriangleAlert },
   { key: "analytics", to: "/analytics", label: "Analytics", icon: FileText },
+  { key: "calendar", to: "/calendar", label: "Burn calendar", icon: CalendarDays },
   { key: "ingestion", to: "/ingestion", label: "Ingestion", icon: Flame },
 ];
 

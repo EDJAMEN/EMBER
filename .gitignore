@@ -34,6 +34,6 @@ coverage
 .DS_Store
 *.suo
 *.ntvs*
-*.njsproj
+*.njsprojno
 *.sln
 *.sw?
