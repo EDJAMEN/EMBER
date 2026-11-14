@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -15,6 +15,8 @@ import {
   Menu,
   Moon,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   Radio,
   Settings2,
   Sun,
@@ -22,6 +24,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
+
+const SIDEBAR_STORAGE_KEY = "ember-sidebar-collapsed";
 
 export type EmberNavKey = "overview" | "detections" | "alerts" | "analytics" | "calendar" | "ingestion";
 
@@ -55,8 +59,36 @@ export function EmberShell({
 }) {
   const { dark, toggle } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
   const isLive = liveStatus?.mode === "live";
+
+  useEffect(() => {
+    try {
+      setCollapsed(window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1");
+    } catch {
+      // localStorage unavailable; keep the expanded default.
+    }
+  }, []);
+
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try {
+      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? "1" : "0");
+    } catch {
+      // Persisting the preference is optional.
+    }
+  };
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
 
   const pillLabel = !isLive
     ? "DEMO PREVIEW"
@@ -80,11 +112,11 @@ export function EmberShell({
       : liveStatus.lastSync
         ? `Synced ${liveStatus.lastSync}`
         : "Live feed"
-    : "Updated 2 min ago";
+    : "";
 
   return (
-    <main className="ember-shell min-h-screen bg-background text-foreground">
-      <aside className={`ember-sidebar ${menuOpen ? "ember-sidebar-open" : ""}`}>
+    <main className={`ember-shell min-h-screen bg-background text-foreground ${collapsed ? "ember-shell-collapsed" : ""}`}>
+      <aside id="ember-sidebar" className={`ember-sidebar ${menuOpen ? "ember-sidebar-open" : ""}`}>
         <div className="ember-brand" aria-label="EMBER">
           <span className="ember-brand-mark">
             <Flame size={19} strokeWidth={2.4} />
@@ -106,6 +138,8 @@ export function EmberShell({
               <Link
                 key={item.key}
                 href={item.to}
+                title={item.label}
+                aria-current={isActive ? "page" : undefined}
                 className={`ember-nav-item ${isActive ? "active" : ""}`}
                 onClick={() => setMenuOpen(false)}
               >
@@ -130,7 +164,7 @@ export function EmberShell({
             <span>Response guide</span>
             <ChevronRight size={13} />
           </div>
-          <button className="ember-profile" type="button" onClick={() => setMenuOpen(!menuOpen)}>
+          <button className="ember-profile" type="button">
             <span className="ember-avatar">OC</span>
             <span className="ember-profile-copy">
               <b>Operations Center</b>
@@ -145,10 +179,23 @@ export function EmberShell({
         <header className="ember-topbar">
           <button
             className="ember-mobile-menu"
-            aria-label="Open navigation"
+            aria-label={menuOpen ? "Close navigation" : "Open navigation"}
+            aria-expanded={menuOpen}
+            aria-controls="ember-sidebar"
             onClick={() => setMenuOpen(!menuOpen)}
           >
             <Menu size={19} />
+          </button>
+          <button
+            className="ember-collapse"
+            type="button"
+            aria-expanded={!collapsed}
+            aria-controls="ember-sidebar"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={toggleCollapsed}
+          >
+            {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </button>
           <div className="ember-breadcrumb">
             <span>Workspace</span>
@@ -160,7 +207,7 @@ export function EmberShell({
               <span className="ember-pulse-dot" /> {pillLabel}
             </div>
             <span className="ember-top-divider" />
-            <span className="ember-updated">{updatedLabel}</span>
+            {updatedLabel && <span className="ember-updated">{updatedLabel}</span>}
             <Button
               variant="ghost"
               size="icon"

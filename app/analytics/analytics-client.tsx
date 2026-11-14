@@ -34,25 +34,27 @@ export function AnalyticsPage() {
       <section className="ember-page-heading">
         <div>
           <div className="ember-eyebrow">
-            <span /> TELEMETRY INTELLIGENCE <span className="ember-eyebrow-date">/ BUKIDNON</span>
+            <span /> TELEMETRY INTELLIGENCE
           </div>
           <h1>
             Burn-zone analytics<span>.</span>
           </h1>
-          <p>Sample ingestion trends, severity mix, and settlement risk index.</p>
+          <p>Ingestion trends, severity mix, and settlement risk index.</p>
         </div>
-        <div className="ember-window-selector" aria-label="Time range">
-          {(["24h", "7d", "30d"] as const).map((r) => (
-            <button
-              type="button"
-              key={r}
-              aria-pressed={range === r}
-              className={range === r ? "selected" : ""}
-              onClick={() => setRange(r)}
-            >
-              {r}
-            </button>
-          ))}
+        <div className="ember-page-actions">
+          <div className="ember-window-selector" aria-label="Time range">
+            {(["24h", "7d", "30d"] as const).map((r) => (
+              <button
+                type="button"
+                key={r}
+                aria-pressed={range === r}
+                className={range === r ? "selected" : ""}
+                onClick={() => setRange(r)}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -86,7 +88,7 @@ export function AnalyticsPage() {
             84.6<span className="ember-stat-unit"> MW</span>
           </div>
           <div className="ember-stat-foot">
-            <span>Max recorded FRP intensity</span>
+            <span>VIIRS 375m</span>
           </div>
         </article>
         <article className="ember-stat">
@@ -109,7 +111,7 @@ export function AnalyticsPage() {
             <p>VIIRS 375m vs MODIS 1km detection counts</p>
           </div>
         </div>
-        <div className="ember-map-layout" style={{ display: "block", padding: "20px" }}>
+        <div className="ember-panel">
           <div style={{ display: "flex", alignItems: "flex-end", gap: "12px", height: "220px" }}>
             {DAILY_TREND.map((d) => {
               const total = d.viirs + d.modis;
@@ -148,7 +150,7 @@ export function AnalyticsPage() {
                       style={{
                         height: `${(d.viirs / max) * 140}px`,
                         background: "var(--ember-sky)",
-                        borderRadius: "3px 3px 0 0",
+                        borderRadius: "var(--radius-chip) var(--radius-chip) 0 0",
                       }}
                       title={`VIIRS ${d.viirs}`}
                     />
@@ -156,7 +158,7 @@ export function AnalyticsPage() {
                       style={{
                         height: `${(d.modis / max) * 140}px`,
                         background: "var(--ember-amber)",
-                        borderRadius: "0 0 3px 3px",
+                        borderRadius: "0 0 var(--radius-chip) var(--radius-chip)",
                       }}
                       title={`MODIS ${d.modis}`}
                     />
@@ -184,7 +186,7 @@ export function AnalyticsPage() {
             <p>Normalized telemetry across burn zones</p>
           </div>
         </div>
-        <div className="ember-map-layout" style={{ display: "block", padding: "20px" }}>
+        <div className="ember-panel">
           {BREAKDOWN.map((row) => (
             <div key={row.label} style={{ marginBottom: "14px" }}>
               <div
@@ -203,7 +205,7 @@ export function AnalyticsPage() {
                 style={{
                   height: "8px",
                   background: "var(--muted)",
-                  borderRadius: "99px",
+                  borderRadius: "var(--radius-pill)",
                   overflow: "hidden",
                 }}
               >
@@ -212,7 +214,7 @@ export function AnalyticsPage() {
                     height: "100%",
                     width: row.width,
                     background: row.color,
-                    borderRadius: "99px",
+                    borderRadius: "var(--radius-pill)",
                   }}
                 />
               </div>
@@ -232,7 +234,7 @@ export function AnalyticsPage() {
             <p>Ranked by clusters within 10 km</p>
           </div>
         </div>
-        <div className="ember-map-layout" style={{ display: "block", minHeight: 0 }}>
+        <div className="ember-panel">
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", textAlign: "left", fontSize: "11px" }}>
               <thead>
@@ -263,7 +265,7 @@ export function AnalyticsPage() {
                       <span
                         className={m.risk === "CRITICAL" ? "confidence-high" : "confidence-nominal"}
                         style={{
-                          borderRadius: "3px",
+                          borderRadius: "var(--radius-chip)",
                           padding: "3px 6px",
                           fontFamily: "var(--font-mono)",
                           fontSize: "9px",

@@ -75,7 +75,7 @@ export function SmartActionGuide({ place, onLocate }: { place: GuidePlace; onLoc
   const badge = HEAT_BADGE[guide.heat];
 
   return (
-    <div className="ember-map-layout" style={{ display: "block", padding: "20px", minHeight: 0, overflow: "visible", borderTop: "1px solid var(--border)" }}>
+    <div className="ember-panel" style={{ marginTop: "16px" }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div>
           <div className="ember-detail-kicker">
@@ -97,7 +97,13 @@ export function SmartActionGuide({ place, onLocate }: { place: GuidePlace; onLoc
             onPick={choose}
             before={<Search size={15} />}
           />
-          <Button type="button" variant="outline" size="sm" onClick={locateMe}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="ember-layer-button"
+            onClick={locateMe}
+          >
             <LocateFixed size={14} /> Use my location
           </Button>
         </div>
