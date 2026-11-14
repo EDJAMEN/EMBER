@@ -19,6 +19,18 @@ export async function fetchConditions(lat: number, lng: number): Promise<Conditi
       r.ok ? r.json() : Promise.reject(new Error(`air ${r.status}`)),
     ),
   ]);
+  if (weather.status === "rejected") {
+    // Open-Meteo refused or is down: temperature/humidity/peak heat index from NOAA GFS, wind from GFS too.
+    const [clim, wind] = await Promise.allSettled([
+      fetch(`/api/climate?points=${lat},${lng}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`climate ${r.status}`)))),
+      fetch(`/api/wind?points=${lat},${lng}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`wind ${r.status}`)))),
+    ]);
+    const c = clim.status === "fulfilled" ? clim.value.points?.[0] : null;
+    const wk = wind.status === "fulfilled" ? wind.value.points?.[0]?.[0]?.speedKmh : null;
+    const a = air.status === "fulfilled" ? air.value.current : null;
+    if (!c) throw new Error("weather unavailable");
+    return { tempC: num(c.tempC), humidity: num(c.humidity), windKmh: num(wk), usAqi: num(a?.us_aqi), maxHeatIndexC: num(c.maxHeatIndexC) };
+  }
   const hourly = weather.status === "fulfilled" ? weather.value.hourly : null;
   const w = weather.status === "fulfilled" ? weather.value.current : null;
   const a = air.status === "fulfilled" ? air.value.current : null;

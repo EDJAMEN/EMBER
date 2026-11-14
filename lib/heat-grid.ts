@@ -43,21 +43,60 @@ export interface GridCell {
   maxHeatIndexC: number | null;
 }
 
-export const GRID_STEP_DEG = 0.15; // 7×7 cells ≈ 100 km square
+export const GRID_STEP_DEG = 0.15; // point mode: 7×7 cells ≈ 100 km square
 const GRID_HALF = 3;
+const AREA_N = 9; // area mode: 9×9 points spread over the selected area's extent
 
-export async function fetchHeatGrid(lat: number, lng: number): Promise<GridCell[]> {
+/** Grid points: a ~100 km square around the point, or — given an area's [w, s, e, n] — spread over that area. */
+export function gridPoints(lat: number, lng: number, bbox?: [number, number, number, number] | null) {
   const pts: { lat: number; lng: number }[] = [];
+  if (bbox) {
+    let [w, s, e, n] = bbox;
+    // Pad a little, and give tiny villages a minimum span so the contours still have room to form.
+    const padLng = Math.max((e - w) * 0.06, (0.12 - (e - w)) / 2, 0);
+    const padLat = Math.max((n - s) * 0.06, (0.12 - (n - s)) / 2, 0);
+    w -= padLng; e += padLng; s = Math.max(-89.9, s - padLat); n = Math.min(89.9, n + padLat);
+    for (let i = 0; i < AREA_N; i++)
+      for (let j = 0; j < AREA_N; j++)
+        pts.push({
+          lat: Number((s + ((n - s) * i) / (AREA_N - 1)).toFixed(4)),
+          lng: Number((w + ((e - w) * j) / (AREA_N - 1)).toFixed(4)),
+        });
+    return pts;
+  }
   for (let i = -GRID_HALF; i <= GRID_HALF; i++)
-    for (let j = -GRID_HALF; j <= GRID_HALF; j++) {
-      const pLat = Math.max(-89.9, Math.min(89.9, lat + i * GRID_STEP_DEG));
-      const pLng = ((((lng + j * GRID_STEP_DEG + 180) % 360) + 360) % 360) - 180;
-      pts.push({ lat: Number(pLat.toFixed(4)), lng: Number(pLng.toFixed(4)) });
-    }
+    for (let j = -GRID_HALF; j <= GRID_HALF; j++)
+      pts.push({
+        lat: Number(Math.max(-89.9, Math.min(89.9, lat + i * GRID_STEP_DEG)).toFixed(4)),
+        lng: Number((lng + j * GRID_STEP_DEG).toFixed(4)), // left unwrapped so the grid stays regular
+      });
+  return pts;
+}
+
+const wrapLng = (x: number) => Number((((((x + 180) % 360) + 360) % 360) - 180).toFixed(4));
+
+export async function fetchHeatGrid(
+  lat: number,
+  lng: number,
+  bbox?: [number, number, number, number] | null,
+): Promise<GridCell[]> {
+  const pts = gridPoints(lat, lng, bbox);
+  try {
+    return await fetchOpenMeteoGrid(pts);
+  } catch {
+    // Open-Meteo refused (its free quota is per network) or is down: same grid from NOAA GFS via our server.
+    const res = await fetch(`/api/climate?points=${pts.map((p) => `${p.lat},${wrapLng(p.lng)}`).join(";")}`);
+    const body = (await res.json()) as { points?: { tempC: number; maxHeatIndexC: number }[]; error?: string };
+    if (!res.ok || !body.points) throw new Error(body.error ?? `climate ${res.status}`);
+    return pts.map((p, i) => ({ ...p, tempC: body.points![i]?.tempC ?? null, maxHeatIndexC: body.points![i]?.maxHeatIndexC ?? null }));
+  }
+}
+
+async function fetchOpenMeteoGrid(pts: { lat: number; lng: number }[]): Promise<GridCell[]> {
   // One multi-location request (Open-Meteo returns an array in the same order).
   const res = await fetch(
     `https://api.open-meteo.com/v1/forecast?latitude=${pts.map((p) => p.lat).join(",")}&longitude=${pts
-      .map((p) => p.lng)
+      .map((p) => wrapLng(p.lng))
       .join(",")}&current=temperature_2m&hourly=temperature_2m,relative_humidity_2m&forecast_days=1&timezone=auto`,
   );
   if (!res.ok) throw new Error(`grid ${res.status}`);
@@ -111,7 +150,9 @@ export function contourAreas(
 
   const lat0 = cells[0]!.lat;
   const lng0 = cells[0]!.lng;
-  const step = GRID_STEP_DEG / SMOOTH;
+  // Spacing comes from the cells themselves: fixed for the 100 km square, area-sized otherwise.
+  const stepLat = (cells[n]!.lat - lat0) / SMOOTH;
+  const stepLng = (cells[1]!.lng - lng0) / SMOOTH;
   const size = (n - 1) * SMOOTH + 1;
   const pts = [];
   let inside = 0;
@@ -130,7 +171,7 @@ export function contourAreas(
         v(i0 + 1, j0 + 1) * ti * tj;
       if (z >= lo && z <= hi) inside++;
       // lng not re-wrapped so the grid stays regular across the dateline (Leaflet draws >180 fine)
-      pts.push(point([lng0 + J * step, lat0 + I * step], { z }));
+      pts.push(point([lng0 + J * stepLng, lat0 + I * stepLat], { z }));
     }
   }
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -42,10 +42,13 @@ import { DEFAULT_PLACE, type GuidePlace } from "@/lib/geocode";
 import { conditionsKey, fetchConditions } from "@/lib/conditions";
 import { heatIndexC, heatLevel } from "@/lib/action-guide";
 import { clipToBoundary, contourAreas, fetchHeatGrid, gridDomain } from "@/lib/heat-grid";
-import type { BoundaryPayload } from "@/app/api/boundary/route";
+import type { BoundaryPayload, LevelsPayload } from "@/app/api/boundary/route";
 import { ClimatePanel, HeatScaleSlider } from "@/components/climate-panel";
 import { useTheme } from "@/hooks/use-theme";
+import { booleanPointInPolygon, pointToPolygonDistance } from "@turf/turf";
+import { NEARBY_KM, splitByBorder } from "@/lib/fire-area";
 import { HOTSPOTS, type Confidence, type Hotspot } from "@/lib/hotspots";
+import { WIND_SCALE, compassOf, fetchFireWinds, fetchWindField, keepBox, sampleWind, spreadEllipse, spreadFeatures } from "@/lib/wind";
 import { EmberShell, type EmberLiveStatus } from "@/components/ember-shell";
 import type { EmberMapInstance, EmberMapLayers } from "@/components/ember-map";
 import {
@@ -62,13 +65,14 @@ const VIEWS: OverviewView[] = ["fires", "temperature", "heatindex"];
 const MAP_SEARCH_ID = "ember-map-search-input";
 const OVERVIEW_STORAGE_KEY = "ember.overview.v1";
 
-function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView?: MapView; realistic?: boolean } {
+function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView?: MapView; realistic?: boolean; adminLevel?: string } {
   try {
     const saved = JSON.parse(localStorage.getItem(OVERVIEW_STORAGE_KEY) ?? "null") as {
       place?: Partial<GuidePlace> | null;
       view?: unknown;
       mapView?: unknown;
       realistic?: unknown;
+      adminLevel?: unknown;
     } | null;
     const p = saved?.place;
     const validPlace =
@@ -80,10 +84,20 @@ function readSavedOverview(): { place?: GuidePlace; view?: OverviewView; mapView
       Math.abs(p.lat!) <= 90 &&
       Math.abs(p.lng!) <= 180;
     return {
-      place: validPlace ? (p as GuidePlace) : undefined,
+      place: validPlace
+        ? {
+            name: p.name!,
+            region: p.region!,
+            lat: p.lat!,
+            lng: p.lng!,
+            osm: typeof p.osm === "string" && /^[NWR]\d{1,12}$/.test(p.osm) ? p.osm : undefined,
+            kind: typeof p.kind === "string" ? p.kind.slice(0, 40) : undefined,
+          }
+        : undefined,
       view: VIEWS.includes(saved?.view as OverviewView) ? (saved!.view as OverviewView) : undefined,
       mapView: saved?.mapView === "globe" || saved?.mapView === "mercator" ? saved.mapView : undefined,
       realistic: typeof saved?.realistic === "boolean" ? saved.realistic : undefined,
+      adminLevel: typeof saved?.adminLevel === "string" ? saved.adminLevel : undefined,
     };
   } catch {
     return {};
@@ -112,11 +126,13 @@ export function EmberDashboard() {
   const [place, setPlace] = useState<GuidePlace | null>(null);
   const [view, setView] = useState<OverviewView>("fires");
   const [mapView, setMapView] = useState<MapView>("globe");
+  // Preferred admin level for the climate views (e.g. "city", "state"); null = the place's default.
+  const [adminLevel, setAdminLevel] = useState<string | null>(null);
   // blueMarble on = "Realistic" (NASA GIBS satellite imagery); off = "Normal" vector basemap.
   const [layers, setLayers] = useState<EmberMapLayers>({
     blueMarble: false,
     countryBorders: true,
-    firmsWms: true,
+    firmsWms: false, // optional (Layers): live markers + heatspots show the same fires without spending the key's quota
     clusteredHotspots: true,
   });
   const [restored, setRestored] = useState(false);
@@ -133,6 +149,7 @@ export function EmberDashboard() {
     if (saved.view) setView(saved.view);
     if (saved.mapView) setMapView(saved.mapView);
     if (saved.realistic !== undefined) setLayers((prev) => ({ ...prev, blueMarble: saved.realistic! }));
+    if (saved.adminLevel) setAdminLevel(saved.adminLevel);
     setRestored(true);
   }, [handleLocate]);
   useEffect(() => {
@@ -140,12 +157,12 @@ export function EmberDashboard() {
     try {
       localStorage.setItem(
         OVERVIEW_STORAGE_KEY,
-        JSON.stringify({ place, view, mapView, realistic: layers.blueMarble }),
+        JSON.stringify({ place, view, mapView, realistic: layers.blueMarble, adminLevel }),
       );
     } catch {
       // storage blocked (private mode etc.) — the page still works, it just won't remember
     }
-  }, [place, view, mapView, layers.blueMarble, restored]);
+  }, [place, view, mapView, layers.blueMarble, adminLevel, restored]);
 
   const climate = view !== "fires"; // temperature or heat-index view
   const focusPlace = place ?? (climate ? DEFAULT_PLACE : null);
@@ -155,10 +172,75 @@ export function EmberDashboard() {
     enabled: climate && focusPlace !== null,
     staleTime: 10 * 60 * 1000,
   });
+  // The place's real admin hierarchy (country → region → province/state → … → village).
+  const lat3 = focusPlace?.lat.toFixed(3);
+  const lng3 = focusPlace?.lng.toFixed(3);
+  const levelsQuery = useQuery({
+    queryKey: ["admin-levels", lat3, lng3],
+    queryFn: async (): Promise<LevelsPayload> => {
+      const res = await fetch(`/api/boundary?lat=${focusPlace!.lat}&lng=${focusPlace!.lng}`);
+      if (!res.ok) throw new Error(`levels ${res.status}`);
+      return res.json();
+    },
+    enabled: focusPlace !== null, // wildfire view uses the same area as the climate views
+    staleTime: Infinity, // admin areas don't change
+    retry: 1,
+  });
+  const levels = levelsQuery.data?.levels ?? null;
+  // A place picked from search (e.g. "Bukidnon" the province, "Texas" the state) IS the area to cover —
+  // its exact OSM border — until the user picks a different level chip for that place.
+  const placeKey = focusPlace ? `${focusPlace.lat},${focusPlace.lng}` : "";
+  const [levelChosenFor, setLevelChosenFor] = useState<string | null>(null);
+  const pickedArea = !!focusPlace?.osm && levelChosenFor !== placeKey;
+  const chooseLevel = useCallback(
+    (key: string) => {
+      setAdminLevel(key);
+      setLevelChosenFor(placeKey);
+    },
+    [placeKey],
+  );
+  const sameName = (a?: string, b?: string) => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+  // Picked area → highlight its own chip; otherwise the preferred level (carries over between places) or the default.
+  const level = pickedArea
+    ? (levels?.find((l) => sameName(l.name, focusPlace?.name)) ?? null)
+    : (levels?.find((l) => l.key === adminLevel) ?? levels?.find((l) => l.key === levelsQuery.data?.defaultKey) ?? null);
+  // Border of the chosen area so the heat areas cover exactly it (e.g. Valencia City, or all of Bukidnon).
+  const boundaryQuery = useQuery({
+    queryKey: pickedArea ? ["boundary-osm", focusPlace?.osm] : ["boundary", lat3, lng3, level?.key, level?.name],
+    queryFn: async (): Promise<BoundaryPayload> => {
+      const qs = new URLSearchParams({ lat: String(focusPlace!.lat), lng: String(focusPlace!.lng) });
+      if (pickedArea) {
+        qs.set("osm", focusPlace!.osm!);
+        qs.set("kind", focusPlace!.kind ?? "");
+      } else {
+        qs.set("level", level!.key);
+        qs.set("name", level!.name);
+      }
+      const res = await fetch(`/api/boundary?${qs}`);
+      if (!res.ok) throw new Error(`boundary ${res.status}`);
+      return res.json();
+    },
+    enabled: focusPlace !== null && (pickedArea || level !== null),
+    staleTime: Infinity,
+    retry: 1,
+  });
+  const boundary = boundaryQuery.data?.geometry ?? null;
+  const boundaryBbox = boundaryQuery.data?.bbox ?? null;
+  const boundaryName = boundaryQuery.data?.name ?? null;
+  // The chosen level exists but has no mapped border (e.g. a barangay mapped only as a point):
+  // cover nothing rather than an invented square, and say so.
+  const borderMissing = (pickedArea || level !== null) && boundaryQuery.isSuccess && boundary === null;
+  const missingName = pickedArea ? (focusPlace?.name ?? null) : (level?.name ?? null);
+  // Wait for the border so the weather grid covers exactly the chosen area (a village, or a whole country).
+  // Only when the lookups themselves fail (offline, open sea) fall back to ~100 km around the place.
+  const borderReady = boundaryQuery.isError || (boundaryQuery.isSuccess && boundary !== null);
+  const areaSettled = pickedArea
+    ? borderReady
+    : levelsQuery.isError || (levelsQuery.isSuccess && (!level || borderReady));
   const gridQuery = useQuery({
-    queryKey: ["heat-grid", focusPlace?.lat ?? 0, focusPlace?.lng ?? 0],
-    queryFn: () => fetchHeatGrid(focusPlace!.lat, focusPlace!.lng),
-    enabled: climate && focusPlace !== null,
+    queryKey: ["heat-grid", focusPlace?.lat ?? 0, focusPlace?.lng ?? 0, boundaryBbox?.join(",") ?? "point"],
+    queryFn: () => fetchHeatGrid(focusPlace!.lat, focusPlace!.lng, boundaryBbox),
+    enabled: climate && focusPlace !== null && areaSettled,
     staleTime: 30 * 60 * 1000,
   });
   const temp = conditionsQuery.data;
@@ -170,52 +252,46 @@ export function EmberDashboard() {
   const domain = useMemo(() => (climate && gridCells ? gridDomain(gridCells, metric) : null), [climate, gridCells, metric]);
   // Slider selection; null = the full range of values around the place.
   const [tempRange, setTempRange] = useState<[number, number] | null>(null);
-  useEffect(() => setTempRange(null), [domain]); // new place or metric → show everything again
-  const range: [number, number] | null = domain
-    ? [
-        Math.max(domain[0], Math.min(tempRange?.[0] ?? domain[0], domain[1])),
-        Math.min(domain[1], Math.max(tempRange?.[1] ?? domain[1], domain[0])),
-      ]
-    : null;
+  // New place or metric → show everything again. (Not on data arrival, so a range set while loading is kept.)
+  useEffect(() => setTempRange(null), [focusPlace?.lat, focusPlace?.lng, metric]);
+  // Sliders stay usable without data: they span the whole legend scale until the area's own min–max is known.
+  const sliderDomain: [number, number] = domain ?? [0, 55];
+  const range: [number, number] = [
+    Math.max(sliderDomain[0], Math.min(tempRange?.[0] ?? sliderDomain[0], sliderDomain[1])),
+    Math.min(sliderDomain[1], Math.max(tempRange?.[1] ?? sliderDomain[1], sliderDomain[0])),
+  ];
   const rangeLo = range?.[0];
   const rangeHi = range?.[1];
-  // Border of the place (e.g. Valencia City) so the heat areas cover that place only.
-  const boundaryQuery = useQuery({
-    queryKey: ["boundary", focusPlace?.lat.toFixed(3), focusPlace?.lng.toFixed(3)],
-    queryFn: async (): Promise<BoundaryPayload> => {
-      const res = await fetch(`/api/boundary?lat=${focusPlace!.lat}&lng=${focusPlace!.lng}`);
-      if (!res.ok) throw new Error(`boundary ${res.status}`);
-      return res.json();
-    },
-    enabled: climate && focusPlace !== null,
-    staleTime: Infinity, // borders don't change
-    retry: 1,
-  });
-  const boundary = boundaryQuery.data?.geometry ?? null;
-  const boundaryName = boundaryQuery.data?.name ?? null;
   const contours = useMemo(() => {
-    if (!gridCells || rangeLo === undefined || rangeHi === undefined) return null;
-    if (boundaryQuery.isLoading) return null; // wait, so the unclipped areas don't flash first
+    if (borderMissing || !gridCells || rangeLo === undefined || rangeHi === undefined) return null;
     const all = contourAreas(gridCells, metric, rangeLo, rangeHi);
     // No border found (open sea, unmapped area, lookup failed): fall back to the surrounding area.
     return boundary ? clipToBoundary(all.areas, boundary) : all;
-  }, [gridCells, metric, rangeLo, rangeHi, boundary, boundaryQuery.isLoading]);
+  }, [borderMissing, gridCells, metric, rangeLo, rangeHi, boundary]);
   const [confidence, setConfidence] = useState<"all" | Confidence>("all");
   const [showViirs, setShowViirs] = useState(true);
   const [showModis, setShowModis] = useState(true);
   const [dayCursor, setDayCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [live, setLive] = useState(false);
+  const [live, setLive] = useState(true); // real NASA FIRMS by default; sample data only on request
   const [bbox, setBbox] = useState<[number, number, number, number]>([7.3, 124.5, 8.6, 125.5]);
   const wfsWindow: "24h" | "7d" = dayCursor < 0 ? "7d" : "24h";
+  // Search the chosen area's extent plus ~NEARBY_KM around it ([minLat, minLon, maxLat, maxLon]), so fires just
+  // outside the border (which the wind can push in) are known; ~55 km square only without a border.
+  // shortcut: an area crossing the dateline is clamped at ±180°, so its far side is not searched; split the box if that matters.
   const effectiveBbox: [number, number, number, number] = place
-    ? [place.lat - 0.5, place.lng - 0.5, place.lat + 0.5, place.lng + 0.5]
+    ? boundaryBbox
+      ? [boundaryBbox[1] - NEARBY_KM / 111, boundaryBbox[0] - NEARBY_KM / 111, boundaryBbox[3] + NEARBY_KM / 111, boundaryBbox[2] + NEARBY_KM / 111]
+      : [place.lat - 0.5, place.lng - 0.5, place.lat + 0.5, place.lng + 0.5]
     : bbox;
   const bboxKey = effectiveBbox.map((n) => n.toFixed(2)).join(",");
+  const near = place ? { lat: place.lat, lng: place.lng, name: place.name } : null; // distances are from the searched point
   const firmsQuery = useQuery({
-    queryKey: ["firms-wfs", wfsWindow, bboxKey],
-    queryFn: () => fetchFirmsWfsHotspots({ bbox: effectiveBbox, window: wfsWindow }),
-    enabled: live,
+    queryKey: ["firms-wfs", wfsWindow, bboxKey, near?.lat, near?.lng, near?.name],
+    placeholderData: keepPreviousData, // zoom/pan: keep the fires on screen while the new area loads
+    queryFn: () => fetchFirmsWfsHotspots({ bbox: effectiveBbox, window: wfsWindow, near }),
+    // Wait for the area's border, so the first request already covers the right area.
+    enabled: live && (!place || areaSettled || borderMissing),
     staleTime: 2 * 60 * 1000,
     retry: 1,
   });
@@ -240,7 +316,10 @@ export function EmberDashboard() {
     return () => clearInterval(timer);
   }, [playing]);
 
-  const visibleHotspots: ClusteredHotspot[] = useMemo(() => {
+  // Individual detections passing the filters (live FIRMS pixels, or the sample set).
+  // Inside the chosen area's real border (e.g. Valencia City, all of Bukidnon); if it has none, the fires within
+  // NEARBY_KM of the border instead, marked as such, so spread/heatspots still show what threatens the area.
+  const { fires: filteredFires, nearby: firesNearby } = useMemo(() => {
     const query = search.toLowerCase();
     const matchesFilter = (hotspot: Hotspot) => {
       if (confidence !== "all" && hotspot.confidence !== confidence) return false;
@@ -257,16 +336,64 @@ export function EmberDashboard() {
       return true;
     };
 
-    if (isLiveFeedActive && firmsQuery.data) {
-      return clusterHotspots(firmsQuery.data.data.filter(matchesFilter));
-    }
+    // Never pass sample fires off as real ones: while live (loading or failed) show none.
+    const source = isLiveFeedActive && firmsQuery.data ? firmsQuery.data.data : live || place ? NO_HOTSPOTS : HOTSPOTS;
+    const fires = source.filter(matchesFilter);
+    if (!boundary) return { fires, nearby: false };
+    return splitByBorder(fires, boundary, booleanPointInPolygon, pointToPolygonDistance);
+  }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data, place, live, boundary]);
+  const areaName = boundaryName ?? place?.name ?? "this area";
 
-    const fallback = place ? NO_HOTSPOTS : HOTSPOTS;
-    return fallback.filter(matchesFilter).map((h) => ({
-      ...h,
-      highConfidenceCount: h.confidence === "high" ? 1 : 0,
-    }));
-  }, [confidence, showViirs, showModis, dayCursor, search, isLiveFeedActive, firmsQuery.data, place]);
+  const visibleHotspots: ClusteredHotspot[] = useMemo(
+    () =>
+      isLiveFeedActive
+        ? clusterHotspots(filteredFires)
+        : filteredFires.map((h) => ({ ...h, highConfidenceCount: h.confidence === "high" ? 1 : 0 })),
+    [filteredFires, isLiveFeedActive],
+  );
+  // Heatspots: every detection (not the clusters), weighted by its fire radiative power when known.
+  const heatPoints = useMemo(
+    () => filteredFires.map((h) => ({ lat: h.lat, lng: h.lng, weight: h.frp ?? h.count })),
+    [filteredFires],
+  );
+
+  // Wind overlays (Wildfires view): animated live wind, wind-driven spread estimate, heatspot glow.
+  // Part of LIVE mode: wind and heatspots start on (LIVE is the default) and come back on when LIVE is picked.
+  const [windOn, setWindOn] = useState(true);
+  const [spreadOn, setSpreadOn] = useState(false);
+  const [heatOn, setHeatOn] = useState(true);
+  const [viewBbox, setViewBbox] = useState<[number, number, number, number]>([7.3, 124.5, 8.6, 125.5]);
+  // One global wind field (NOAA GFS) covers the whole map at every zoom; refreshed every 30 min.
+  const windQuery = useQuery({
+    queryKey: ["wind-field"],
+    queryFn: fetchWindField,
+    enabled: !climate && windOn,
+    staleTime: 30 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
+    // NOAA is often slow: keep retrying (the last good wind stays on the map meanwhile).
+    retry: 4,
+    retryDelay: (n) => Math.min(30_000, 3_000 * 2 ** n),
+  });
+  // shortcut: spread is estimated for the 40 strongest fires only, to keep the request small.
+  const spreadFires = useMemo(() => visibleHotspots.slice(0, 40).map((h) => ({ lat: h.lat, lng: h.lng })), [visibleHotspots]);
+  const fireWindQuery = useQuery({
+    queryKey: ["fire-wind", spreadFires.map((f) => `${f.lat.toFixed(3)},${f.lng.toFixed(3)}`).join(";")],
+    placeholderData: keepPreviousData,
+    queryFn: () => fetchFireWinds(spreadFires),
+    enabled: !climate && spreadOn && spreadFires.length > 0,
+    staleTime: 15 * 60 * 1000,
+    retry: 1,
+  });
+  const spread = useMemo(() => (fireWindQuery.data ? spreadFeatures(fireWindQuery.data) : null), [fireWindQuery.data]);
+  // Wind right now at the place (or the map centre), for the sidebar readout.
+  const windHere = useMemo(() => {
+    if (!windQuery.data) return null;
+    const lat = place?.lat ?? (viewBbox[0] + viewBbox[2]) / 2;
+    const lng = place?.lng ?? (viewBbox[1] + viewBbox[3]) / 2;
+    const v = sampleWind(windQuery.data, lat, lng);
+    const toward = ((Math.atan2(v.u, v.v) * 180) / Math.PI + 360) % 360;
+    return { speed: Math.hypot(v.u, v.v), from: compassOf(toward + 180), toward: compassOf(toward) };
+  }, [windQuery.data, place, viewBbox]);
 
   // Memoized: a new array every render would re-run the map's marker/pan effect and cut off fly-to animations.
   const mapIncidents = useMemo(
@@ -293,6 +420,29 @@ export function EmberDashboard() {
         : focusPlace.name;
   const selectedHotspot = visibleHotspots.find((h) => h.id === selectedId) ?? visibleHotspots[0];
   const selectedIndex = selectedHotspot ? visibleHotspots.indexOf(selectedHotspot) : 0;
+
+  // Spread on (or another fire picked): fly to that fire, close enough that its +1 h / +3 h / +6 h zones are
+  // clearly visible. They are drawn true to scale, so at region zoom a light wind's zones hide under the marker.
+  const fittedSpread = useRef<string | null>(null);
+  useEffect(() => {
+    if (!spreadOn || climate) {
+      fittedSpread.current = null;
+      return;
+    }
+    const fw = fireWindQuery.data?.find((f) => f.lat === selectedHotspot?.lat && f.lng === selectedHotspot?.lng) ?? fireWindQuery.data?.[0];
+    if (!fw) return;
+    const key = `${fw.lat},${fw.lng}`;
+    if (fittedSpread.current === key) return;
+    const e = spreadEllipse(fw.lat, fw.lng, fw.hourly, 6);
+    if (!e) return;
+    fittedSpread.current = key;
+    const ring = [...e.polygon.coordinates[0]!, [fw.lng, fw.lat]];
+    const xs = ring.map((c) => c[0]!), ys = ring.map((c) => c[1]!);
+    mapRef.current?.fitBounds(
+      [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]],
+      { padding: 110, maxZoom: 15, duration: 1800 },
+    );
+  }, [spreadOn, climate, fireWindQuery.data, selectedHotspot?.lat, selectedHotspot?.lng]);
   const activeCount = isLiveFeedActive
     ? visibleHotspots.reduce((sum, h) => sum + h.count, 0)
     : visibleHotspots.length;
@@ -497,7 +647,11 @@ export function EmberDashboard() {
                 type="button"
                 aria-pressed={live}
                 className={live ? "selected" : ""}
-                onClick={() => setLive(true)}
+                onClick={() => {
+                  setLive(true);
+                  setWindOn(true);
+                  setHeatOn(true);
+                }}
               >
                 {firmsQuery.isFetching ? "LOADING" : "LIVE"}
               </button>
@@ -551,11 +705,17 @@ export function EmberDashboard() {
               layers={layers}
               showViirs={showViirs}
               showModis={showModis}
-              onBoundsChange={setBbox}
+              onBoundsChange={(b) => setBbox((prev) => (keepBox(prev, b) ? prev : b))} // zooming in keeps the loaded fires
+              onViewChange={setViewBbox}
               projection={mapView}
               focus={focusPlace ? { lat: focusPlace.lat, lng: focusPlace.lng, label: pinLabel } : null}
               areas={climate ? (contours?.areas ?? null) : null}
-              outline={climate ? boundary : null}
+              outline={boundary}
+              fitTo={boundaryBbox}
+              wind={!climate && windOn ? (windQuery.data ?? null) : null}
+              spread={!climate && spreadOn ? spread : null}
+              spreadWinds={!climate && spreadOn ? (fireWindQuery.data ?? null) : null}
+              heatPoints={!climate && heatOn ? heatPoints : null}
               onMapClick={
                 climate
                   ? (lat, lng) =>
@@ -761,6 +921,103 @@ export function EmberDashboard() {
                   </button>
                 ))}
               </div>
+              {view === "fires" && (
+                <div style={{ marginTop: "12px" }}>
+                  <div className="ember-sort-label" style={{ padding: 0, marginBottom: "8px" }}>
+                    <span>WIND &amp; FIRE SPREAD</span>
+                  </div>
+                  <div className="ember-window-selector" aria-label="Wind and fire overlays" style={{ width: "100%", display: "flex" }}>
+                    {(
+                      [
+                        ["Wind", windOn, setWindOn, windQuery.isFetching, "Animated live wind, coloured by speed"],
+                        ["Spread", spreadOn, setSpreadOn, fireWindQuery.isFetching, "Where the wind pushes each fire in 1, 3 and 6 h"],
+                        ["Heatspots", heatOn, setHeatOn, false, "Heat glow of the detections"],
+                      ] as const
+                    ).map(([label, on, set, busy, title]) => (
+                      <button
+                        type="button"
+                        key={label}
+                        aria-pressed={on}
+                        className={on ? "selected" : ""}
+                        title={`${title} (click to turn ${on ? "off" : "on"})`}
+                        onClick={() => set(!on)}
+                        style={{ flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "5px" }}
+                      >
+                        {/* Explicit state: these start ON in live mode, so a plain highlight was easy to misread. */}
+                        <i
+                          aria-hidden
+                          style={{
+                            width: "7px",
+                            height: "7px",
+                            borderRadius: "50%",
+                            background: on ? "#4cc36a" : "transparent",
+                            border: `1.5px solid ${on ? "#4cc36a" : "currentColor"}`,
+                            opacity: on ? 1 : 0.6,
+                          }}
+                        />
+                        {label}
+                        <small style={{ fontSize: "9px", opacity: 0.8 }}>{on ? (busy ? "…" : "ON") : "OFF"}</small>
+                      </button>
+                    ))}
+                  </div>
+                  {windOn && (
+                    <div style={{ marginTop: "10px", fontSize: "12px" }}>
+                      {windQuery.isError ? (
+                        <span style={{ opacity: 0.75 }}>Live wind is unavailable right now (weather service limit or offline). Try again in a minute.</span>
+                      ) : windHere ? (
+                        <b>
+                          Wind {Math.round(windHere.speed)} km/h from the {windHere.from}, pushing fire {windHere.toward}
+                          {place ? ` · at ${place.name}` : " · map centre"}
+                        </b>
+                      ) : (
+                        <span style={{ opacity: 0.75 }}>Loading live wind…</span>
+                      )}
+                      <div
+                        style={{
+                          marginTop: "6px",
+                          height: "8px",
+                          borderRadius: "2px",
+                          background: `linear-gradient(to right, ${WIND_SCALE.map(([, c]) => c).join(", ")})`,
+                        }}
+                      />
+                      <div style={{ display: "flex", fontSize: "10px", opacity: 0.75 }}>
+                        {WIND_SCALE.map(([min]) => (
+                          <span key={min} style={{ flex: 1 }}>{min}</span>
+                        ))}
+                      </div>
+                      <small style={{ fontSize: "10px", opacity: 0.75 }}>km/h · 10 m above ground · {windQuery.data?.run ?? "NOAA GFS"}</small>
+                    </div>
+                  )}
+                  {spreadOn && (
+                    <div style={{ marginTop: "10px", fontSize: "12px" }}>
+                      <div style={{ display: "flex", gap: "12px" }}>
+                        {([["+1 h", "#e3211c"], ["+3 h", "#ff8c1a"], ["+6 h", "#ffd000"]] as const).map(([t, c]) => (
+                          <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                            <i style={{ width: "10px", height: "10px", borderRadius: "2px", background: c, opacity: 0.8 }} /> {t}
+                          </span>
+                        ))}
+                      </div>
+                      <small style={{ display: "block", fontSize: "10px", opacity: 0.75, marginTop: "4px" }}>
+                        {fireWindQuery.isError
+                          ? "Wind forecast unavailable right now."
+                          : spreadFires.length === 0
+                            ? place && boundary
+                              ? `No fires inside ${areaName} or within ${NEARBY_KM} km of it in this time window. Try the 7-day timeline or another area.`
+                              : "No fires to project in this view."
+                            : `Projected for the ${spreadFires.length} strongest fires from the hourly wind forecast (head fire ≈ 10% of wind speed). Ignores fuel and slope; hover an area for details.`}
+                      </small>
+                    </div>
+                  )}
+                  {firesNearby && (spreadOn || heatOn) && (
+                    <div
+                      role="status"
+                      style={{ marginTop: "10px", padding: "7px 9px", borderRadius: "4px", fontSize: "11px", background: "rgb(255 140 26 / 14%)", border: "1px solid rgb(255 140 26 / 40%)" }}
+                    >
+                      No fires inside {areaName} right now. Showing <b>{filteredFires.length}</b> detection{filteredFires.length === 1 ? "" : "s"} within {NEARBY_KM} km of its border that the wind could push in.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             {climate && focusPlace ? (
               <ClimatePanel
@@ -774,7 +1031,12 @@ export function EmberDashboard() {
                 range={range}
                 onRangeChange={setTempRange}
                 coverage={contours?.coverage ?? null}
-                areasLoading={gridQuery.isLoading || boundaryQuery.isLoading}
+                areasLoading={levelsQuery.isLoading || boundaryQuery.isLoading || gridQuery.isLoading}
+                areasFailed={gridQuery.isError}
+                levels={levels}
+                levelKey={level?.key ?? null}
+                onLevelChange={chooseLevel}
+                levelMissing={borderMissing ? missingName : null}
                 coverageOf={boundary ? (boundaryName ?? focusPlace.name) : null}
               />
             ) : (
@@ -826,7 +1088,7 @@ export function EmberDashboard() {
                           {BADGE_OF[hotspot.confidence]}
                         </i>
                       </span>
-                      <span className="ember-incident-area">{place ? `${hotspot.proximityKm.toFixed(1)} km from ${place.name}` : `${hotspot.municipality}, Bukidnon`}</span>
+                      <span className="ember-incident-area">{place ? hotspot.settlement : hotspot.municipality === "Regional" ? hotspot.settlement : `${hotspot.municipality}, Bukidnon`}</span>
                       <span className="ember-incident-meta">
                         {hotspot.acqTime}
                         <span>·</span>
@@ -933,8 +1195,8 @@ export function EmberDashboard() {
             <small>
               {live
                 ? firmsQuery.isError
-                  ? "Live feed failed, showing sample data"
-                  : `${firmsQuery.data?.rawCount ?? 0} live detections · ${place ? `~55 km around ${place.name}` : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
+                  ? "Live feed failed. No detections shown; try again shortly"
+                  : `${activeCount} live detections · ${place ? (boundary ? (firesNearby ? `within ${NEARBY_KM} km of ${areaName} (none inside)` : `inside ${areaName}`) : `~55 km around ${place.name}`) : firmsQuery.data?.region === "Global" ? "Global" : "SouthEast_Asia"}`
                 : `${visibleHotspots.length} clusters · closest settlement ${closest.toFixed(1)} km`}
             </small>
           </span>

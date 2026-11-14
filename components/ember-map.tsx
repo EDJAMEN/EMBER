@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { sampleWind, spreadEllipse, windRgb, type FireWind, type WindField } from "@/lib/wind";
 import maplibregl, {
   type ExpressionSpecification,
   type GeoJSONSource,
@@ -69,6 +70,31 @@ function buildingsLayer(dark: boolean): LayerSpecification {
   };
 }
 
+/** Arrow pointing up (north); rotated per fire. White outline so it reads on any background. */
+function arrowImage() {
+  const w = 28, h = 64;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const g = c.getContext("2d")!;
+  g.beginPath();
+  g.moveTo(w / 2, 2); // tip
+  g.lineTo(w - 2, 24);
+  g.lineTo(w / 2 + 5, 24);
+  g.lineTo(w / 2 + 5, h - 2);
+  g.lineTo(w / 2 - 5, h - 2);
+  g.lineTo(w / 2 - 5, 24);
+  g.lineTo(2, 24);
+  g.closePath();
+  g.fillStyle = "#ff5a1f";
+  g.strokeStyle = "#ffffff";
+  g.lineWidth = 3;
+  g.lineJoin = "round";
+  g.stroke();
+  g.fill();
+  return g.getImageData(0, 0, w, h);
+}
+
 /** EMBER layers in draw order: 3D buildings (bottom) → province boundary → heat areas → fire footprints. Markers are DOM, always on top. */
 function addEmberLayers(map: maplibregl.Map, dark: boolean) {
   if (map.getSource("openmaptiles")) map.addLayer(buildingsLayer(dark));
@@ -119,6 +145,84 @@ function addEmberLayers(map: maplibregl.Map, dark: boolean) {
     type: "line",
     source: "ember-place-outline",
     paint: { "line-color": dark ? "#fff" : "#1f2937", "line-width": 2, "line-dasharray": [2, 1.5] },
+  });
+  // Heatspots: glow weighted by detections, fades into individual points up close.
+  map.addSource("ember-heat", { type: "geojson", data: EMPTY });
+  map.addLayer({
+    id: "ember-heat-layer",
+    type: "heatmap",
+    source: "ember-heat",
+    paint: {
+      // A lone small fire still glows clearly; strong fires (high FRP, MW) glow hotter.
+      "heatmap-weight": ["interpolate", ["linear"], ["get", "weight"], 0, 0.6, 10, 0.85, 50, 1],
+      "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 3, 1.5, 9, 3, 14, 5],
+      "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 3, 14, 9, 40, 14, 80],
+      "heatmap-opacity": 0.85,
+      "heatmap-color": [
+        "interpolate", ["linear"], ["heatmap-density"],
+        0, "rgba(255,230,0,0)", 0.08, "rgba(255,230,0,0.55)", 0.3, "#ffb000", 0.55, "#ff6a1a", 0.8, "#e3211c", 1, "#7f0a0a",
+      ],
+    },
+  });
+  // Wind-driven spread estimate: +6 h (faint) under +3 h under +1 h (strong), and the fire → head track.
+  map.addSource("ember-spread", { type: "geojson", data: EMPTY });
+  map.addLayer({
+    id: "ember-spread-fill",
+    type: "fill",
+    source: "ember-spread",
+    filter: ["==", ["geometry-type"], "Polygon"],
+    paint: {
+      "fill-color": ["match", ["get", "hours"], 1, "#e3211c", 3, "#ff8c1a", "#ffd000"],
+      "fill-opacity": ["match", ["get", "hours"], 1, 0.55, 3, 0.32, 0.18],
+    },
+  });
+  // Animated fire front (time-lapse 0 → 6 h): soft glow under a crisp red edge.
+  map.addSource("ember-spread-live", { type: "geojson", data: EMPTY });
+  map.addLayer({
+    id: "ember-spread-live-fill",
+    type: "fill",
+    source: "ember-spread-live",
+    paint: { "fill-color": "#ff3b1f", "fill-opacity": 0.22 },
+  });
+  map.addLayer({
+    id: "ember-spread-live-glow",
+    type: "line",
+    source: "ember-spread-live",
+    paint: { "line-color": "#ff6a1f", "line-width": 10, "line-blur": 6, "line-opacity": 0.7 },
+  });
+  map.addLayer({
+    id: "ember-spread-live-edge",
+    type: "line",
+    source: "ember-spread-live",
+    paint: { "line-color": "#ff2a12", "line-width": 2.5 },
+  });
+  // Wind-push arrow on each fire: points where the wind drives it, longer for stronger wind.
+  if (!map.hasImage("ember-arrow")) map.addImage("ember-arrow", arrowImage(), { pixelRatio: 2 });
+  map.addLayer({
+    id: "ember-spread-arrow",
+    type: "symbol",
+    source: "ember-spread",
+    filter: ["==", ["geometry-type"], "Point"],
+    layout: {
+      "icon-image": "ember-arrow",
+      "icon-rotate": ["get", "toward"],
+      "icon-rotation-alignment": "map",
+      "icon-anchor": "bottom", // tail on the fire, head downwind
+      "icon-offset": [0, -9], // start just outside the fire marker (scaled by icon-size)
+      "icon-size": ["interpolate", ["linear"], ["get", "speed"], 0, 1, 10, 1.3, 30, 1.7, 60, 2.2],
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
+    },
+  });
+  map.addLayer({
+    id: "ember-spread-line",
+    type: "line",
+    source: "ember-spread",
+    paint: {
+      "line-color": ["match", ["get", "hours"], 1, "#e3211c", 3, "#ff8c1a", "#d9a400"],
+      "line-width": ["case", ["==", ["geometry-type"], "LineString"], 2.5, ["==", ["get", "hours"], 1], 2.5, 1.2],
+      "line-dasharray": [2, 1],
+    },
   });
   map.addSource("ember-footprints", { type: "geojson", data: EMPTY });
   map.addLayer({
@@ -225,12 +329,23 @@ export function EmberMap({
   onMapClick,
   areas,
   outline = null,
+  fitTo = null,
   projection = "globe",
   layers = { blueMarble: true, countryBorders: true, firmsWms: true, clusteredHotspots: true },
   showViirs = true,
   showModis = true,
   onBoundsChange,
+  wind = null,
+  spread = null,
+  spreadWinds = null,
+  heatPoints = null,
+  onViewChange,
 }: {
+  onViewChange?: (bbox: [number, number, number, number]) => void; // after every move, any zoom: [s, w, n, e]
+  wind?: WindField | null; // global live wind → animated particles over the whole map
+  spread?: FeatureCollection | null; // projected fire spread areas
+  spreadWinds?: FireWind[] | null; // per-fire hourly wind → animated fire front
+  heatPoints?: { lat: number; lng: number; weight: number }[] | null; // detections for the heat glow
   projection?: "globe" | "mercator"; // map view: 3D globe or flat map
   incidents: EmberMapIncident[];
   selected: number;
@@ -241,6 +356,7 @@ export function EmberMap({
   onMapClick?: (lat: number, lng: number) => void;
   areas?: FeatureCollection<MultiPolygon, { color: string; label: string }> | null; // temperature / heat-index contours
   outline?: Polygon | MultiPolygon | null; // border of the selected place; heat areas are clipped to it
+  fitTo?: [number, number, number, number] | null; // [w, s, e, n] of the chosen area: zoom to show all of it
   layers?: EmberMapLayers;
   showViirs?: boolean;
   showModis?: boolean;
@@ -259,6 +375,8 @@ export function EmberMap({
   const darkRef = useRef(dark);  const projectionRef = useRef(projection);
   const boundsChangeRef = useRef(onBoundsChange);
   boundsChangeRef.current = onBoundsChange;
+  const viewChangeRef = useRef(onViewChange);
+  viewChangeRef.current = onViewChange;
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const pinRef = useRef<{ marker: maplibregl.Marker; label: HTMLSpanElement } | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -315,7 +433,7 @@ export function EmberMap({
       hoveredId = undefined;
     };
     map.on("mousemove", (e) => {
-      const layers = ["ember-landmarks-dot", "ember-areas-fill", "ember-boundary-fill"].filter((id) => map.getLayer(id));
+      const layers = ["ember-landmarks-dot", "ember-spread-arrow", "ember-spread-fill", "ember-areas-fill", "ember-boundary-fill"].filter((id) => map.getLayer(id));
       const top: MapGeoJSONFeature | undefined = map.queryRenderedFeatures(e.point, { layers })[0];
       clearHover();
       if (!top) return void popup.remove();
@@ -343,8 +461,9 @@ export function EmberMap({
     const emitBounds = () => {
       if (boundsTimer) clearTimeout(boundsTimer);
       boundsTimer = setTimeout(() => {
-        if (map.getZoom() < 3.5) return;
         const b = map.getBounds();
+        viewChangeRef.current?.([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]);
+        if (map.getZoom() < 3.5) return;
         boundsChangeRef.current?.([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]);
       }, 450);
     };
@@ -531,9 +650,9 @@ export function EmberMap({
       map.addSource("nasa-firms-wms", {
         type: "raster",
         tiles: [
-          `/api/firms/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=${activeWmsLayers.join(",")}&FORMAT=image/png&TRANSPARENT=true&SRS=EPSG:3857&WIDTH=256&HEIGHT=256&BBOX={bbox-epsg-3857}`,
+          `/api/firms/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=${activeWmsLayers.join(",")}&FORMAT=image/png&TRANSPARENT=true&SRS=EPSG:3857&WIDTH=512&HEIGHT=512&BBOX={bbox-epsg-3857}`,
         ],
-        tileSize: 256,
+        tileSize: 512, // 4× fewer requests than 256 px tiles; each one costs a FIRMS transaction
       });
       map.addLayer({
         id: "nasa-firms-wms-layer",
@@ -600,6 +719,186 @@ export function EmberMap({
     if (focusLabel !== undefined && pinRef.current) pinRef.current.label.textContent = focusLabel;
   }, [focusLabel]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    setData(map, "ember-heat", {
+      type: "FeatureCollection",
+      features: (heatPoints ?? []).map((h) => ({
+        type: "Feature" as const,
+        geometry: { type: "Point" as const, coordinates: [h.lng, h.lat] },
+        properties: { weight: h.weight },
+      })),
+    });
+  }, [heatPoints, styleVersion]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (map) setData(map, "ember-spread", spread ?? EMPTY);
+  }, [spread, styleVersion]);
+
+  // Fire-front time-lapse: every fire's spread grows from 0 to 6 h (6 s), holds, and repeats.
+  const badgeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    const badge = badgeRef.current;
+    if (!map || !badge) return;
+    const clear = () => {
+      setData(map, "ember-spread-live", EMPTY);
+      badge.style.display = "none";
+    };
+    if (!spreadWinds?.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return clear();
+    badge.style.display = "block";
+    const CYCLE = 7_000, GROW = 6_000, HOURS = 6;
+    const start = performance.now();
+    let raf = 0, last = 0;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      if (now - last < 50) return; // ~20 fps is plenty for a growing outline
+      last = now;
+      const h = (Math.min((now - start) % CYCLE, GROW) / GROW) * HOURS;
+      const features = spreadWinds.flatMap((f) => {
+        const e = spreadEllipse(f.lat, f.lng, f.hourly, Math.max(0.05, h));
+        return e ? [{ type: "Feature" as const, geometry: e.polygon, properties: {} }] : [];
+      });
+      setData(map, "ember-spread-live", { type: "FeatureCollection", features });
+      badge.textContent = `🔥 Fire front  +${h.toFixed(1)} h`;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      clear();
+    };
+  }, [spreadWinds, styleVersion]);
+
+  // Wind speed as a smooth coloured layer over the whole planet (Web Mercator image, under the place labels).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || styleVersion === 0) return;
+    const drop = () => {
+      if (map.getLayer("ember-wind-field")) map.removeLayer("ember-wind-field");
+      if (map.getSource("ember-wind-field")) map.removeSource("ember-wind-field");
+    };
+    drop();
+    if (!wind) return;
+    const MAX_LAT = 85.0511;
+    const size = 1024;
+    const img = document.createElement("canvas");
+    img.width = size;
+    img.height = size;
+    const ictx = img.getContext("2d")!;
+    const data = ictx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / size))) * 180) / Math.PI; // Mercator row → latitude
+      for (let x = 0; x < size; x++) {
+        const v = sampleWind(wind, lat, -180 + ((x + 0.5) / size) * 360);
+        const [r, g, b] = windRgb(Math.hypot(v.u, v.v));
+        const k = (y * size + x) * 4;
+        data.data[k] = r; data.data[k + 1] = g; data.data[k + 2] = b; data.data[k + 3] = 255;
+      }
+    }
+    ictx.putImageData(data, 0, 0);
+    const beforeLabels = map.getStyle().layers.find((l) => l.type === "symbol" && !l.id.startsWith("ember-"))?.id;
+    map.addSource("ember-wind-field", {
+      type: "image",
+      url: img.toDataURL("image/png"),
+      coordinates: [[-180, MAX_LAT], [180, MAX_LAT], [180, -MAX_LAT], [-180, -MAX_LAT]],
+    });
+    map.addLayer(
+      { id: "ember-wind-field", type: "raster", source: "ember-wind-field", paint: { "raster-opacity": 0.72, "raster-resampling": "linear", "raster-fade-duration": 0 } },
+      beforeLabels && map.getLayer(beforeLabels) ? beforeLabels : undefined,
+    );
+    return drop;
+  }, [wind, styleVersion]);
+
+  // Wind particles: white trails over the coloured layer; each moves with the live wind at its spot.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !wind) return;
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+    map.getCanvas().after(canvas); // above the map, below fire markers
+    const ctx = canvas.getContext("2d")!;
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = window.devicePixelRatio || 1;
+      W = map.getContainer().clientWidth;
+      H = map.getContainer().clientHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      canvas.style.width = `${W}px`;
+      canvas.style.height = `${H}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+    resize();
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    type Particle = { x: number; y: number; age: number };
+    const spawn = (p: Particle) => {
+      p.x = Math.random() * W;
+      p.y = Math.random() * H;
+      p.age = Math.floor(Math.random() * 60);
+    };
+    // Density follows the map size (it can be 0×0 while the layout settles, so this is redone on resize).
+    let particles: Particle[] = [];
+    const fill = () => {
+      particles = Array.from({ length: Math.min(3000, Math.round((W * H) / 300)) }, () => ({ x: 0, y: 0, age: 0 }));
+      particles.forEach(spawn);
+    };
+    fill();
+    const onResize = () => { resize(); fill(); };
+    const clear = () => ctx.clearRect(0, 0, W, H); // trails would smear while the map moves
+    map.on("move", clear);
+    map.on("resize", onResize);
+    let raf = 0;
+    const frame = () => {
+      // Never let one bad frame (e.g. a point the globe can't project) stop the animation for good.
+      try {
+        draw();
+      } catch {
+        particles.forEach(spawn);
+      }
+      if (!reduced) raf = requestAnimationFrame(frame);
+    };
+    const draw = () => {
+      ctx.globalCompositeOperation = "destination-in"; // fade old trails
+      ctx.fillStyle = "rgba(0,0,0,0.93)"; // longer, smoother trails
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.lineWidth = 1.2;
+      const path = new Path2D();
+      for (const p of particles) {
+        const ll = map.unproject([p.x, p.y]);
+        // Off the globe's edge unproject gives no real point: respawn instead of drawing there.
+        if (!Number.isFinite(ll.lat) || Math.abs(ll.lat) > 85 || ++p.age > 90) { spawn(p); continue; }
+        const v = sampleWind(wind, ll.lat, ll.lng);
+        const speed = Math.hypot(v.u, v.v);
+        if (speed < 0.3) continue;
+        // Screen direction from projecting a tiny downwind step (handles bearing, tilt and the globe).
+        const cosLat = Math.max(0.05, Math.cos((ll.lat * Math.PI) / 180));
+        const q = map.project([ll.lng + (v.u / speed) * 0.001 / cosLat, ll.lat + (v.v / speed) * 0.001]);
+        const dx = q.x - p.x, dy = q.y - p.y, len = Math.hypot(dx, dy) || 1;
+        const px = Math.min(4, 0.08 * speed + 0.3); // on-screen speed grows with wind speed
+        path.moveTo(p.x, p.y);
+        p.x += (dx / len) * px;
+        p.y += (dy / len) * px;
+        path.lineTo(p.x, p.y);
+        if (!(p.x >= 0 && p.y >= 0 && p.x <= W && p.y <= H)) spawn(p); // also catches NaN
+      }
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.stroke(path);
+    };
+    // Reduced motion: draw still streaks (direction + strength) instead of animating, redrawn after each move.
+    const still = () => { for (let k = 0; k < 40; k++) draw(); };
+    if (reduced) { still(); map.on("moveend", still); } else frame();
+    return () => {
+      cancelAnimationFrame(raf);
+      map.off("moveend", still);
+      map.off("move", clear);
+      map.off("resize", onResize);
+      canvas.remove();
+    };
+  }, [wind]);
+
   // Temperature / heat-index contour areas.
   useEffect(() => {
     const map = mapRef.current;
@@ -612,7 +911,43 @@ export function EmberMap({
     setData(map, "ember-place-outline", outline ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: outline, properties: {} }] } : EMPTY);
   }, [outline, styleVersion]);
 
-  return <div ref={containerRef} className="ember-leaflet" aria-hidden="true" />;
+  // Zoom to show the whole chosen area (a village, a province, a whole country).
+  const fitKey = fitTo?.join(",");
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !fitTo) return;
+    const [w, s, e, n] = fitTo;
+    // Countries spanning the dateline (bbox ≈ whole world) would zoom to nothing useful: keep the current view.
+    if (e - w > 300) return;
+    map.fitBounds([[w, s], [e, n]], { padding: 40, duration: 1800, maxZoom: 13 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fitKey captures fitTo's value
+  }, [fitKey]);
+
+  return (
+    <>
+      <div ref={containerRef} className="ember-leaflet" aria-hidden="true" />
+      <div
+        ref={badgeRef}
+        role="status"
+        style={{
+          display: "none",
+          position: "absolute",
+          left: "50%",
+          bottom: "14px",
+          transform: "translateX(-50%)",
+          padding: "5px 11px",
+          borderRadius: "999px",
+          background: "rgb(20 12 10 / 78%)",
+          border: "1px solid rgb(255 90 31 / 55%)",
+          color: "#ffd9cc",
+          font: "600 12px var(--font-mono, monospace)",
+          pointerEvents: "none",
+          whiteSpace: "pre",
+          boxShadow: "0 0 18px rgb(255 59 31 / 35%)",
+        }}
+      />
+    </>
+  );
 }
 
 export default EmberMap;
