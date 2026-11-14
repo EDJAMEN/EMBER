@@ -1,7 +1,7 @@
 // Self-check: `npx tsx lib/action-guide.check.ts` — exits non-zero on failure.
 import assert from "node:assert/strict";
 import { buildGuide, heatIndexC, heatLevel } from "./action-guide";
-import { contourAreas, gridDomain, heatColor, maxHeatIndex } from "./heat-grid";
+import { clipToBoundary, contourAreas, gridDomain, heatColor, maxHeatIndex } from "./heat-grid";
 
 assert.equal(Math.round(heatIndexC(32.22, 70)), 41, "matches NWS table (90°F / 70% → 106°F)");
 assert.equal(heatLevel(26.4), "None");
@@ -54,3 +54,19 @@ const warm = contourAreas(cells, "tempC", 28, 32);
 assert.ok(warm.coverage > 0.25 && warm.coverage < 0.45, `east third covered, got ${warm.coverage}`);
 assert.equal(contourAreas(cells, "tempC", 40, 45).areas.features.length, 0, "no area outside the data");
 console.log("contour check passed");
+
+// clip to a place boundary: the east half of the test grid
+const eastHalf = {
+  type: "Polygon" as const,
+  coordinates: [[[125.45, 8], [125.9, 8], [125.9, 8.9], [125.45, 8.9], [125.45, 8]]],
+};
+const clipped = clipToBoundary(all.areas, eastHalf);
+const box = (f: (typeof clipped.areas.features)[number]) => f.geometry.coordinates.flat(2);
+assert.ok(clipped.areas.features.length > 0, "something remains inside the boundary");
+assert.ok(clipped.areas.features.every((f) => box(f).every(([x]) => x! >= 125.45 - 1e-9)), "nothing outside the boundary");
+assert.ok(clipped.coverage > 0.95, `whole boundary covered when range = all, got ${clipped.coverage}`);
+const warmInEast = clipToBoundary(contourAreas(cells, "tempC", 31, 32).areas, eastHalf);
+assert.ok(warmInEast.coverage > 0 && warmInEast.coverage < 0.6, `partial coverage, got ${warmInEast.coverage}`);
+const far = { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] };
+assert.equal(clipToBoundary(all.areas, far).areas.features.length, 0, "boundary elsewhere → nothing");
+console.log("boundary clip check passed");

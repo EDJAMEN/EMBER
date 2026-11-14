@@ -128,6 +128,7 @@ function RangePicker({
   onRangeChange,
   coverage,
   loading,
+  coverageOf,
 }: {
   what: string;
   domain: [number, number] | null;
@@ -135,6 +136,7 @@ function RangePicker({
   onRangeChange: (range: [number, number]) => void;
   coverage: number | null;
   loading: boolean;
+  coverageOf: string | null; // name of the place the areas are clipped to
 }) {
   if (!domain || !range) {
     return (
@@ -202,8 +204,8 @@ function RangePicker({
         {coverage === null
           ? ""
           : coverage === 0
-            ? `No area around this place has a ${what} in this range.`
-            : `Covers about ${Math.max(1, Math.round(coverage * 100))}% of the ~100 km area around this place.`}
+            ? `No part of ${coverageOf ?? "the area around this place"} has a ${what} in this range.`
+            : `Covers about ${Math.max(1, Math.round(coverage * 100))}% of ${coverageOf ?? "the ~100 km area around this place"}.`}
       </p>
     </div>
   );
@@ -242,6 +244,7 @@ export function ClimatePanel({
   onRangeChange,
   coverage,
   areasLoading,
+  coverageOf,
 }: {
   view: "temperature" | "heatindex";
   place: GuidePlace;
@@ -254,6 +257,7 @@ export function ClimatePanel({
   onRangeChange: (range: [number, number]) => void;
   coverage: number | null;
   areasLoading: boolean;
+  coverageOf: string | null;
 }) {
   const badge = HEAT_BADGE[heat];
   const maxHi = conditions?.maxHeatIndexC ?? null;
@@ -316,13 +320,14 @@ export function ClimatePanel({
         onRangeChange={onRangeChange}
         coverage={coverage}
         loading={areasLoading}
+        coverageOf={coverageOf}
       />
 
       <div style={{ marginTop: "16px" }}>
         <HeatScaleLegend title={view === "temperature" ? "Temperature" : "Max Heat Index"} />
       </div>
       <p style={{ marginTop: "12px", fontSize: "10px", color: "var(--muted-foreground)" }}>
-        Click anywhere on the map, or search a place, to check another spot. Colored areas cover the surrounding ~100 km.
+        Click anywhere on the map, or search a place, to check another spot. Colored areas cover only the selected city or municipality (its dashed border), or the surrounding ~100 km where no border is found.
         Source: Open-Meteo.
       </p>
     </div>
